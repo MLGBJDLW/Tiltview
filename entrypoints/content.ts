@@ -178,7 +178,7 @@ export default defineContentScript({
     // Message handler
     browser.runtime.onMessage.addListener(
       (
-        message: { type: string; payload?: Partial<TransformState> },
+        message: { type: string; payload?: Partial<TransformState>; command?: string },
         _sender,
         sendResponse,
       ) => {
@@ -212,6 +212,37 @@ export default defineContentScript({
               currentTarget = null;
               currentVideoElement = null;
               inlinePanel?.update(currentState);
+              sendResponse({ success: true, state: currentState });
+              break;
+            }
+
+            case 'command': {
+              const cmd = message.command as string;
+              switch (cmd) {
+                case 'rotate-cw':
+                  currentState = { ...currentState, rotation: (currentState.rotation + 90) % 360 };
+                  break;
+                case 'rotate-ccw':
+                  currentState = { ...currentState, rotation: (currentState.rotation + 270) % 360 };
+                  break;
+                case 'zoom-in':
+                  currentState = { ...currentState, scale: Math.min(5, currentState.scale + 0.25) };
+                  break;
+                case 'zoom-out':
+                  currentState = { ...currentState, scale: Math.max(0.5, currentState.scale - 0.25) };
+                  break;
+                case 'reset-transform':
+                  currentState = getDefaultState();
+                  break;
+                case 'toggle-autofit':
+                  currentState = { ...currentState, autoFit: !currentState.autoFit };
+                  break;
+              }
+              if (currentTarget) {
+                const dims = getContainerDims();
+                applyTransform(currentTarget, currentState, currentState.autoFit ? dims : undefined);
+              }
+              if (inlinePanel) inlinePanel.update(currentState);
               sendResponse({ success: true, state: currentState });
               break;
             }

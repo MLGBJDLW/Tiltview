@@ -1,3 +1,8 @@
 export default defineBackground(() => {
-  console.log('Tiltview background service worker started');
+  browser.commands.onCommand.addListener(async (command) => {
+    const tabs = await browser.tabs.query({ active: true, currentWindow: true });
+    if (tabs[0]?.id) {
+      browser.tabs.sendMessage(tabs[0].id, { type: 'command', command });
+    }
+  });
 });
