@@ -1,43 +1,85 @@
-import type { PlayerAdapter } from '../types';
-import { deepQuerySelector } from '../dom-utils';
+import type { PlayerAdapter, StageSize, UiAnchor } from '../types';
+import { deepQuerySelector, getFullscreenElement, queryFirst } from '../dom-utils';
+import { ensurePositioned, genericAdapter } from './generic';
 
-const HOSTNAMES = ['youtube.com', 'youtu.be', 'www.youtube.com', 'm.youtube.com'];
-const VIDEO_SELECTORS = 'video.html5-main-video, video.video-stream, #movie_player video';
+const VIDEO_SELECTORS = [
+  'video.html5-main-video',
+  '#movie_player video',
+  'video.video-stream',
+  'video',
+];
+
+const PLAYER_SELECTORS = ['#movie_player', '.html5-video-player'];
+
+const CONTAINER_SELECTORS = [
+  '#player-container-inner',
+  '#player-container-outer',
+  '.html5-video-container',
+];
 
 export const youtubeAdapter: PlayerAdapter = {
+  id: 'youtube',
   name: 'YouTube',
 
   canHandle(url: string): boolean {
     try {
       const hostname = new URL(url).hostname;
-      return HOSTNAMES.some((h) => hostname === h || hostname.endsWith('.' + h));
+      return (
+        hostname === 'youtube.com' ||
+        hostname.endsWith('.youtube.com') ||
+        hostname === 'youtu.be' ||
+        hostname === 'youtube-nocookie.com' ||
+        hostname.endsWith('.youtube-nocookie.com')
+      );
     } catch {
       return false;
     }
   },
 
   findVideoElement(): HTMLVideoElement | null {
-    return deepQuerySelector<HTMLVideoElement>(VIDEO_SELECTORS);
+    const fullscreen = getFullscreenElement();
+    if (fullscreen) {
+      const inFullscreen = fullscreen.querySelector('video');
+      if (inFullscreen) return inFullscreen;
+    }
+    return queryFirst<HTMLVideoElement>(VIDEO_SELECTORS) ?? genericAdapter.findVideoElement();
   },
 
-  findTransformTarget(): HTMLElement | null {
-    const video = this.findVideoElement();
-    if (!video) return null;
-
-    const player = deepQuerySelector<HTMLElement>('#movie_player');
-    return player ?? video;
+  findTransformTarget(video: HTMLVideoElement): HTMLElement | null {
+    // Always the <video>. YouTube rewrites #movie_player's own transform during
+    // fullscreen transitions and control-bar animation, so mutating the player
+    // wrapper is what caused the "video jumps back" reports in v0.1.0.
+    return video;
   },
 
-  findPlayerContainer(): HTMLElement | null {
-    return deepQuerySelector<HTMLElement>('#player-container-inner')
-      ?? deepQuerySelector<HTMLElement>('#player-container-outer');
+  findStage(video: HTMLVideoElement): StageSize | null {
+    const fullscreen = getFullscreenElement();
+    if (fullscreen) {
+      const rect = fullscreen.getBoundingClientRect();
+      return { width: rect.width, height: rect.height };
+    }
+    const container =
+      queryFirst<HTMLElement>(CONTAINER_SELECTORS) ?? deepQuerySelector<HTMLElement>('.html5-video-player');
+    if (container) {
+      const rect = container.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0) {
+        return { width: rect.width, height: rect.height };
+      }
+    }
+    return genericAdapter.findStage(video);
   },
 
-  findPlayerOverlayParent(): HTMLElement | null {
-    return deepQuerySelector<HTMLElement>('#movie_player');
-  },
-
-  findControlBarRight(): HTMLElement | null {
-    return deepQuerySelector<HTMLElement>('.ytp-right-controls');
+  findUiAnchor(video: HTMLVideoElement): UiAnchor | null {
+    const fullscreen = getFullscreenElement();
+    if (fullscreen) {
+      return { container: fullscreen };
+    }
+    const player =
+      queryFirst<HTMLElement>(PLAYER_SELECTORS) ??
+      (video.closest('.html5-video-player') as HTMLElement | null);
+    if (!player) return null;
+    ensurePositioned(player);
+    const controlBar = deepQuerySelector<HTMLElement>('.ytp-right-controls');
+    return { container: player, controlBar };
   },
 };

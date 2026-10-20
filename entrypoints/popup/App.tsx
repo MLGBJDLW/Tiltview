@@ -1,270 +1,392 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { browser } from 'wxt/browser';
-import type { TransformState } from '@/lib/types';
+import {
+  ACTIONS,
+  ROTATION_PRESETS,
+  ZOOM_PRESETS,
+  isActionActive,
+  runAction,
+  type ActionId,
+} from '@/lib/actions';
+import { MAX_SCALE, MIN_SCALE, getDefaultState, type TransformState } from '@/lib/geometry';
+import type { ContentResponse } from '@/lib/messaging';
 
-const DEFAULT_STATE: TransformState = {
-  rotation: 0,
-  scale: 1,
-  translateX: 0,
-  translateY: 0,
-  flipH: false,
-  flipV: false,
-  autoFit: false,
-};
+const PAN_STEP = 40;
+const SEND_DEBOUNCE_MS = 60;
 
-const PAN_STEP = 20;
+interface ConnectionState {
+  connected: boolean;
+  hasVideo: boolean;
+  adapter: string;
+  siteEnabled: boolean;
+  error?: string;
+}
 
-async function sendToContent(
-  type: string,
-  payload?: Partial<TransformState>,
-): Promise<{ success: boolean; state: TransformState; hasVideo?: boolean }> {
-  const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
-  if (!tab?.id) throw new Error('No active tab');
-  return browser.tabs.sendMessage(tab.id, { type, payload });
+function useController() {
+  const [state, setState] = useState<TransformState>(getDefaultState());
+  const [conn, setConn] = useState<ConnectionState>({
+    connected: false,
+    hasVideo: false,
+    adapter: '—',
+    siteEnabled: true,
+  });
+  const stateRef = useRef<TransformState>(state);
+  const pending = useRef<Partial<TransformState> | null>(null);
+  const timer = useRef<number | null>(null);
+
+  useEffect(() => {
+    stateRef.current = state;
+  }, [state]);
+
+  const send = useCallback(async (message: unknown): Promise<ContentResponse | null> => {
+    try {
+      const response = (await browser.runtime.sendMessage(message)) as ContentResponse | undefined;
+      if (!response) {
+        setConn((c) => ({ ...c, connected: false, error: 'No response' }));
+        return null;
+      }
+      if (response.type === 'error') {
+        setConn((c) => ({ ...c, error: response.error }));
+        return response;
+      }
+      setState(response.state);
+      setConn({
+        connected: true,
+        hasVideo: response.hasVideo,
+        adapter: response.adapter,
+        siteEnabled: response.siteEnabled,
+      });
+      return response;
+    } catch (error) {
+      setConn((c) => ({
+        ...c,
+        connected: false,
+        error: error instanceof Error ? error.message : String(error),
+      }));
+      return null;
+    }
+  }, []);
+
+  useEffect(() => {
+    void send({ type: 'getState' });
+  }, [send]);
+
+  /** Local echo + debounced flush, so sliders feel instant. */
+  const patch = useCallback(
+    (partial: Partial<TransformState>) => {
+      setState((prev) => ({ ...prev, ...partial }));
+      pending.current = { ...(pending.current ?? {}), ...partial };
+      if (timer.current !== null) window.clearTimeout(timer.current);
+      timer.current = window.setTimeout(() => {
+        const payload = pending.current;
+        pending.current = null;
+        timer.current = null;
+        if (payload) void send({ type: 'setState', payload });
+      }, SEND_DEBOUNCE_MS);
+    },
+    [send],
+  );
+
+  const action = useCallback(
+    (id: ActionId) => {
+      const next = runAction(stateRef.current, id);
+      setState(next);
+      // Send the resulting full state rather than a command name: preset
+      // actions (zoom-2, rotate-180, …) are not part of the command vocabulary,
+      // and this keeps the popup and page in lockstep.
+      void send({ type: 'setState', payload: next });
+    },
+    [send],
+  );
+
+  const refresh = useCallback(() => {
+    void send({ type: 'getState' });
+  }, [send]);
+
+  return { state, conn, patch, action, refresh };
 }
 
 function App() {
-  const [state, setState] = useState<TransformState>(DEFAULT_STATE);
-  const [hasVideo, setHasVideo] = useState(false);
-  const [connected, setConnected] = useState(false);
+  const { state, conn, patch, action, refresh } = useController();
+  const [autoRefresh, setAutoRefresh] = useState(true);
 
-  // Sync state from content script on open
   useEffect(() => {
-    sendToContent('getState')
-      .then((res) => {
-        if (res.success) {
-          setState(res.state);
-          setHasVideo(res.hasVideo ?? false);
-          setConnected(true);
-        }
-      })
-      .catch(() => setConnected(false));
-  }, []);
+    if (!autoRefresh) return;
+    const id = window.setInterval(refresh, 1500);
+    return () => window.clearInterval(id);
+  }, [autoRefresh, refresh]);
 
-  const updateState = useCallback(
-    (partial: Partial<TransformState>) => {
-      setState(prev => {
-        const next = { ...prev, ...partial };
-        sendToContent('setState', next).catch(() => {});
-        return next;
-      });
-    },
-    [],
-  );
-
-  const handleReset = useCallback(() => {
-    setState(DEFAULT_STATE);
-    sendToContent('reset').catch(() => {});
-  }, []);
+  const rotationActions = ACTIONS.filter((a) => a.group === 'rotation');
 
   return (
-    <div className="w-80 bg-gray-900 text-white p-4 text-sm font-sans">
-      {/* Header */}
-      <div className="flex items-center justify-between mb-4">
-        <h1 className="text-lg font-bold tracking-tight">Tiltview</h1>
-        <div className="flex items-center gap-1.5 text-xs text-gray-400">
-          <span
-            className={`w-2 h-2 rounded-full ${
-              connected && hasVideo ? 'bg-green-400' : 'bg-gray-600'
-            }`}
-          />
-          {connected && hasVideo
-            ? 'Video detected'
-            : connected
-              ? 'No video'
-              : 'Disconnected'}
+    <div className="w-[340px] bg-slate-900 text-slate-100 font-sans">
+      <header className="flex items-center justify-between px-4 pt-4 pb-3 border-b border-slate-800">
+        <div>
+          <h1 className="text-base font-semibold tracking-tight">Tiltview</h1>
+          <p className="text-[11px] text-slate-500">{conn.adapter} · v1.0</p>
         </div>
-      </div>
+        <StatusPill conn={conn} />
+      </header>
 
-      {/* Rotation */}
-      <Section title="Rotation">
-        <div className="flex gap-1.5">
-          {[0, 90, 180, 270].map((deg) => (
-            <button
-              key={deg}
-              onClick={() => updateState({ rotation: deg })}
-              className={`flex-1 py-1.5 rounded text-xs font-medium transition ${
-                state.rotation === deg
-                  ? 'bg-blue-600 text-white'
-                  : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-              }`}
+      {conn.error && (
+        <div className="mx-4 mt-3 rounded-md bg-amber-500/10 border border-amber-500/30 px-3 py-2 text-[11px] text-amber-300">
+          {conn.error}
+        </div>
+      )}
+
+      {!conn.hasVideo && conn.connected && (
+        <div className="mx-4 mt-3 rounded-md bg-slate-800/70 px-3 py-2 text-[11px] text-slate-400">
+          当前页面没找到视频。播放任意 HTML5 视频后再打开本面板。
+        </div>
+      )}
+
+      <main className="px-4 py-3 space-y-4">
+        <Section title="旋转">
+          <div className="grid grid-cols-4 gap-1.5">
+            {rotationActions
+              .filter((a) => a.id.startsWith('rotate-') && a.id !== 'rotate-cw' && a.id !== 'rotate-ccw')
+              .map((spec) => (
+                <ActionButton
+                  key={spec.id}
+                  active={isActionActive(state, spec.id)}
+                  title={spec.title}
+                  onClick={() => action(spec.id)}
+                >
+                  {spec.label}
+                </ActionButton>
+              ))}
+          </div>
+          <div className="mt-1.5 grid grid-cols-2 gap-1.5">
+            <ActionButton title="Rotate 90° counter-clockwise" onClick={() => action('rotate-ccw')}>
+              ⟲ 90°
+            </ActionButton>
+            <ActionButton title="Rotate 90° clockwise" onClick={() => action('rotate-cw')}>
+              ⟳ 90°
+            </ActionButton>
+          </div>
+          <div className="mt-2 flex items-center gap-2">
+            <input
+              type="range"
+              min={0}
+              max={359}
+              value={Math.round(state.rotation)}
+              onChange={(e) => patch({ rotation: Number(e.target.value) })}
+              className="flex-1 accent-sky-500"
+              aria-label="Custom rotation"
+            />
+            <input
+              type="number"
+              min={0}
+              max={359}
+              value={Math.round(state.rotation)}
+              onChange={(e) => patch({ rotation: Number(e.target.value) })}
+              className="w-14 rounded bg-slate-800 px-1.5 py-1 text-right text-xs tabular-nums outline-none focus:ring-1 focus:ring-sky-500"
+              aria-label="Rotation degrees"
+            />
+            <span className="text-xs text-slate-500">°</span>
+          </div>
+        </Section>
+
+        <Section title="缩放">
+          <div className="flex items-center gap-2">
+            <input
+              type="range"
+              min={MIN_SCALE}
+              max={MAX_SCALE}
+              step={0.05}
+              value={state.scale}
+              onChange={(e) => patch({ scale: Number(e.target.value) })}
+              className="flex-1 accent-sky-500"
+              aria-label="Zoom"
+            />
+            <span className="w-12 text-right text-xs tabular-nums text-slate-400">
+              {state.scale.toFixed(2)}x
+            </span>
+          </div>
+          <div className="mt-1.5 grid grid-cols-4 gap-1.5">
+            {ZOOM_PRESETS.map((z) => {
+              const id = `zoom-${z}` as ActionId;
+              return (
+                <ActionButton
+                  key={z}
+                  active={isActionActive(state, id)}
+                  title={`Zoom to ${z}x`}
+                  onClick={() => patch({ scale: z })}
+                >
+                  {z}x
+                </ActionButton>
+              );
+            })}
+          </div>
+        </Section>
+
+        <Section title="平移">
+          <div className="flex items-center justify-between gap-3">
+            <div className="grid grid-cols-3 gap-1">
+              <span />
+              <ArrowButton label="▲" onClick={() => patch({ translateY: state.translateY - PAN_STEP })} />
+              <span />
+              <ArrowButton label="◀" onClick={() => patch({ translateX: state.translateX - PAN_STEP })} />
+              <ArrowButton
+                label="●"
+                title="Recenter"
+                onClick={() => patch({ translateX: 0, translateY: 0 })}
+              />
+              <ArrowButton label="▶" onClick={() => patch({ translateX: state.translateX + PAN_STEP })} />
+              <span />
+              <ArrowButton label="▼" onClick={() => patch({ translateY: state.translateY + PAN_STEP })} />
+              <span />
+            </div>
+            <div className="text-[11px] text-slate-500 leading-relaxed">
+              <div>
+                x: <span className="tabular-nums text-slate-300">{Math.round(state.translateX)}</span>
+              </div>
+              <div>
+                y: <span className="tabular-nums text-slate-300">{Math.round(state.translateY)}</span>
+              </div>
+              <div className="mt-1 text-slate-600">也可在视频上直接拖拽</div>
+            </div>
+          </div>
+        </Section>
+
+        <Section title="镜像 / 适配">
+          <div className="grid grid-cols-2 gap-1.5">
+            <ActionButton
+              active={state.flipH}
+              title="Mirror horizontally"
+              onClick={() => action('flip-h')}
             >
-              {deg}°
-            </button>
-          ))}
-        </div>
-        <div className="flex items-center gap-2 mt-2">
-          <input
-            type="range"
-            min={0}
-            max={359}
-            value={state.rotation}
-            onChange={(e) =>
-              updateState({ rotation: Number(e.target.value) })
-            }
-            className="flex-1 accent-blue-500 h-1.5"
-          />
-          <span className="text-xs text-gray-400 w-10 text-right tabular-nums">
-            {state.rotation}°
-          </span>
-        </div>
+              ↔ 水平翻转
+            </ActionButton>
+            <ActionButton
+              active={state.flipV}
+              title="Mirror vertically"
+              onClick={() => action('flip-v')}
+            >
+              ↕ 垂直翻转
+            </ActionButton>
+          </div>
+          <div className="mt-1.5">
+            <ActionButton
+              active={state.autoFit}
+              title="Scale so the rotated video fills the player"
+              onClick={() => action('auto-fit')}
+              wide
+            >
+              Auto-fit {state.autoFit ? '已开' : '已关'}
+            </ActionButton>
+          </div>
+        </Section>
+
+        <Section title="预设角度">
+          <div className="grid grid-cols-4 gap-1.5">
+            {ROTATION_PRESETS.map((deg) => (
+              <ActionButton
+                key={deg}
+                active={state.rotation === deg}
+                onClick={() => patch({ rotation: deg })}
+                title={`Rotate to ${deg}°`}
+              >
+                {deg}°
+              </ActionButton>
+            ))}
+          </div>
+        </Section>
+      </main>
+
+      <footer className="px-4 pb-4 space-y-2">
         <button
-          onClick={() => updateState({ autoFit: !state.autoFit })}
-          className={`w-full mt-2 py-1.5 rounded text-xs font-medium transition ${
-            state.autoFit
-              ? 'bg-blue-600 text-white'
-              : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-          }`}
+          onClick={() => action('reset-all')}
+          className="w-full rounded-md bg-rose-600/85 hover:bg-rose-600 py-2 text-xs font-medium transition"
         >
-          Auto-fit {state.autoFit ? 'ON' : 'OFF'}
+          全部重置
         </button>
-      </Section>
-
-      {/* Zoom */}
-      <Section title="Zoom">
-        <div className="flex items-center gap-2">
-          <input
-            type="range"
-            min={0.5}
-            max={5}
-            step={0.1}
-            value={state.scale}
-            onChange={(e) =>
-              updateState({ scale: Number(e.target.value) })
-            }
-            className="flex-1 accent-blue-500 h-1.5"
-          />
-          <span className="text-xs text-gray-400 w-10 text-right tabular-nums">
-            {state.scale.toFixed(1)}x
-          </span>
+        <div className="flex items-center justify-between text-[11px] text-slate-500">
+          <label className="flex items-center gap-1.5 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={autoRefresh}
+              onChange={(e) => setAutoRefresh(e.target.checked)}
+              className="accent-sky-500"
+            />
+            实时同步
+          </label>
+          <kbd className="rounded border border-slate-700 px-1.5 py-0.5 text-[10px]">Alt+Shift+T</kbd>
         </div>
-        <div className="flex gap-1.5 mt-2">
-          {[1, 1.5, 2, 3].map((z) => (
-            <button
-              key={z}
-              onClick={() => updateState({ scale: z })}
-              className={`flex-1 py-1.5 rounded text-xs font-medium transition ${
-                state.scale === z
-                  ? 'bg-blue-600 text-white'
-                  : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-              }`}
-            >
-              {z}x
-            </button>
-          ))}
-        </div>
-      </Section>
-
-      {/* Pan */}
-      <Section title="Pan">
-        <div className="grid grid-cols-3 gap-1.5 w-28 mx-auto">
-          <div />
-          <ArrowBtn
-            label="▲"
-            onClick={() =>
-              updateState({ translateY: state.translateY - PAN_STEP })
-            }
-          />
-          <div />
-          <ArrowBtn
-            label="◀"
-            onClick={() =>
-              updateState({ translateX: state.translateX - PAN_STEP })
-            }
-          />
-          <ArrowBtn
-            label="●"
-            onClick={() => updateState({ translateX: 0, translateY: 0 })}
-            secondary
-          />
-          <ArrowBtn
-            label="▶"
-            onClick={() =>
-              updateState({ translateX: state.translateX + PAN_STEP })
-            }
-          />
-          <div />
-          <ArrowBtn
-            label="▼"
-            onClick={() =>
-              updateState({ translateY: state.translateY + PAN_STEP })
-            }
-          />
-          <div />
-        </div>
-      </Section>
-
-      {/* Mirror */}
-      <Section title="Mirror">
-        <div className="flex gap-1.5">
-          <button
-            onClick={() => updateState({ flipH: !state.flipH })}
-            className={`flex-1 py-1.5 rounded text-xs font-medium transition ${
-              state.flipH
-                ? 'bg-blue-600 text-white'
-                : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-            }`}
-          >
-            ↔ Horizontal
-          </button>
-          <button
-            onClick={() => updateState({ flipV: !state.flipV })}
-            className={`flex-1 py-1.5 rounded text-xs font-medium transition ${
-              state.flipV
-                ? 'bg-blue-600 text-white'
-                : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-            }`}
-          >
-            ↕ Vertical
-          </button>
-        </div>
-      </Section>
-
-      {/* Reset */}
-      <button
-        onClick={handleReset}
-        className="w-full mt-3 py-2 rounded bg-red-600/80 hover:bg-red-600 text-white text-xs font-medium transition"
-      >
-        Reset All
-      </button>
+      </footer>
     </div>
   );
 }
 
-function Section({
-  title,
-  children,
-}: {
-  title: string;
-  children: React.ReactNode;
-}) {
+function StatusPill({ conn }: { conn: ConnectionState }) {
+  const tone = !conn.connected
+    ? 'bg-slate-600'
+    : conn.hasVideo
+      ? 'bg-emerald-400'
+      : 'bg-amber-400';
   return (
-    <div className="mb-3">
-      <h2 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1.5">
+    <span className="flex items-center gap-1.5 text-[11px] text-slate-400">
+      <span className={`h-2 w-2 rounded-full ${tone}`} />
+      {!conn.connected ? '未连接' : conn.hasVideo ? '已检测到视频' : '无视频'}
+    </span>
+  );
+}
+
+function Section({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <section>
+      <h2 className="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-500">
         {title}
       </h2>
       {children}
-    </div>
+    </section>
   );
 }
 
-function ArrowBtn({
-  label,
+function ActionButton({
+  children,
+  active,
   onClick,
-  secondary,
+  title,
+  wide,
 }: {
-  label: string;
+  children: React.ReactNode;
+  active?: boolean;
   onClick: () => void;
-  secondary?: boolean;
+  title?: string;
+  wide?: boolean;
 }) {
   return (
     <button
       onClick={onClick}
-      className={`w-8 h-8 rounded flex items-center justify-center text-xs transition ${
-        secondary
-          ? 'bg-gray-600 text-gray-300 hover:bg-gray-500'
-          : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-      }`}
+      title={title}
+      className={[
+        wide ? 'w-full' : '',
+        'rounded-md py-1.5 text-xs font-medium transition',
+        active
+          ? 'bg-sky-500/25 text-sky-100 ring-1 ring-sky-500/60'
+          : 'bg-slate-800 text-slate-300 hover:bg-slate-700',
+      ].join(' ')}
+    >
+      {children}
+    </button>
+  );
+}
+
+function ArrowButton({
+  label,
+  onClick,
+  title,
+}: {
+  label: string;
+  onClick: () => void;
+  title?: string;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      title={title}
+      className="flex h-8 w-8 items-center justify-center rounded-md bg-slate-800 text-xs text-slate-300 transition hover:bg-slate-700"
     >
       {label}
     </button>

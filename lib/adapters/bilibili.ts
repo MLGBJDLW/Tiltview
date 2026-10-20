@@ -1,41 +1,84 @@
-import type { PlayerAdapter } from '../types';
-import { deepQuerySelector } from '../dom-utils';
+import type { PlayerAdapter, StageSize, UiAnchor } from '../types';
+import { getFullscreenElement, queryFirst } from '../dom-utils';
+import { ensurePositioned, genericAdapter } from './generic';
 
-const HOSTNAMES = ['bilibili.com', 'www.bilibili.com', 'm.bilibili.com'];
-const VIDEO_SELECTORS = '.bilibili-player-video video, .bpx-player-video-wrap video, video';
+const VIDEO_SELECTORS = [
+  '.bpx-player-video-wrap video',
+  '.bilibili-player-video video',
+  '#bilibili-player video',
+  'video',
+];
+
+const STAGE_SELECTORS = [
+  '.bpx-player-video-area',
+  '.bpx-player-video-wrap',
+  '.bilibili-player-video',
+];
+
+const PLAYER_SELECTORS = [
+  '.bpx-player-container',
+  '#bilibili-player',
+  '.bilibili-player',
+];
+
+const CONTROL_BAR_SELECTORS = [
+  '.bpx-player-control-bottom-right',
+  '.bilibili-player-video-btn',
+];
 
 export const bilibiliAdapter: PlayerAdapter = {
+  id: 'bilibili',
   name: 'Bilibili',
 
   canHandle(url: string): boolean {
     try {
       const hostname = new URL(url).hostname;
-      return HOSTNAMES.some((h) => hostname === h || hostname.endsWith('.' + h));
+      return hostname === 'bilibili.com' || hostname.endsWith('.bilibili.com');
     } catch {
       return false;
     }
   },
 
   findVideoElement(): HTMLVideoElement | null {
-    return deepQuerySelector<HTMLVideoElement>(VIDEO_SELECTORS);
+    const fullscreen = getFullscreenElement();
+    if (fullscreen) {
+      const inFullscreen = fullscreen.querySelector('video');
+      if (inFullscreen) return inFullscreen;
+    }
+    return queryFirst<HTMLVideoElement>(VIDEO_SELECTORS) ?? genericAdapter.findVideoElement();
   },
 
-  findTransformTarget(): HTMLElement | null {
-    return deepQuerySelector<HTMLElement>('.bpx-player-video-wrap')
-      ?? deepQuerySelector<HTMLElement>('.bilibili-player-video')
-      ?? this.findVideoElement();
+  findTransformTarget(video: HTMLVideoElement): HTMLElement | null {
+    // Bilibili's own "mirror" feature writes a scale to `.bpx-player-video-wrap`;
+    // transforming the <video> keeps the two independent.
+    return video;
   },
 
-  findPlayerContainer(): HTMLElement | null {
-    return deepQuerySelector<HTMLElement>('.bpx-player-container')
-      ?? deepQuerySelector<HTMLElement>('#bilibili-player');
+  findStage(video: HTMLVideoElement): StageSize | null {
+    const fullscreen = getFullscreenElement();
+    if (fullscreen) {
+      const rect = fullscreen.getBoundingClientRect();
+      return { width: rect.width, height: rect.height };
+    }
+    const stage = queryFirst<HTMLElement>(STAGE_SELECTORS);
+    if (stage) {
+      const rect = stage.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0) {
+        return { width: rect.width, height: rect.height };
+      }
+    }
+    return genericAdapter.findStage(video);
   },
 
-  findPlayerOverlayParent(): HTMLElement | null {
-    return deepQuerySelector<HTMLElement>('.bpx-player-video-area');
-  },
-
-  findControlBarRight(): HTMLElement | null {
-    return deepQuerySelector<HTMLElement>('.bpx-player-control-bottom-right');
+  findUiAnchor(_video: HTMLVideoElement): UiAnchor | null {
+    const fullscreen = getFullscreenElement();
+    if (fullscreen) {
+      return { container: fullscreen };
+    }
+    const player = queryFirst<HTMLElement>(PLAYER_SELECTORS);
+    if (!player) return null;
+    ensurePositioned(player);
+    const controlBar = queryFirst<HTMLElement>(CONTROL_BAR_SELECTORS);
+    return { container: player, controlBar };
   },
 };

@@ -1,99 +1,154 @@
-import type { TransformState } from './types';
+import {
+  buildTransformCSS,
+  getDefaultState,
+  isDefaultState,
+  type MediaSize,
+  type StageSize,
+  type TransformState,
+} from './geometry';
 
-export function getDefaultState(): TransformState {
-  return {
-    rotation: 0,
-    scale: 1,
-    translateX: 0,
-    translateY: 0,
-    flipH: false,
-    flipV: false,
-    autoFit: false,
-  };
+/**
+ * Applies a TransformState to a real element.
+ *
+ * Differences from v0.1.0:
+ * - The previous inline `transform` is captured once and restored verbatim, so
+ *   sites that rely on their own transforms are not permanently broken.
+ * - `overflow` overrides are recorded in a single set and restored exactly,
+ *   instead of being re-saved on every frame (which leaked and left ancestors
+ *   permanently `overflow: visible`).
+ */
+
+interface SavedInline {
+  transform: string;
+  transformOrigin: string;
+  willChange: string;
+  transition: string;
 }
 
-export function isVerticalRotation(rotation: number): boolean {
-  const normalized = ((rotation % 360) + 360) % 360;
-  return normalized === 90 || normalized === 270;
+interface OverflowOverride {
+  element: HTMLElement;
+  original: string;
+  priority: string;
 }
 
-export function buildTransformCSS(
-  state: TransformState,
-  containerDims?: { width: number; height: number },
-): string {
-  const parts: string[] = [];
+const FADE = 'transform 120ms ease-out';
 
-  if (state.translateX !== 0 || state.translateY !== 0) {
-    parts.push(`translate(${state.translateX}px, ${state.translateY}px)`);
+export class TransformApplier {
+  private target: HTMLElement | null = null;
+  private saved: SavedInline | null = null;
+  private overflowOverrides: OverflowOverride[] = [];
+
+  get currentTarget(): HTMLElement | null {
+    return this.target;
   }
 
-  let effectiveScale = state.scale;
-  if (state.autoFit && containerDims && isVerticalRotation(state.rotation)) {
-    const fitScale = containerDims.height / containerDims.width;
-    effectiveScale = state.scale * fitScale;
-  }
+  apply(
+    element: HTMLElement,
+    state: TransformState,
+    stage?: StageSize | null,
+    media?: MediaSize | null,
+  ): void {
+    if (this.target && this.target !== element) {
+      this.release();
+    }
 
-  if (effectiveScale !== 1) {
-    parts.push(`scale(${effectiveScale})`);
-  }
+    if (!this.saved) {
+      this.saved = {
+        transform: element.style.transform,
+        transformOrigin: element.style.transformOrigin,
+        willChange: element.style.willChange,
+        transition: element.style.transition,
+      };
+      element.style.transformOrigin = 'center center';
+      element.style.willChange = 'transform';
+      element.style.transition = FADE;
+    }
+    this.target = element;
 
-  if (state.rotation !== 0) {
-    parts.push(`rotate(${state.rotation}deg)`);
-  }
-
-  if (state.flipH || state.flipV) {
-    const sx = state.flipH ? -1 : 1;
-    const sy = state.flipV ? -1 : 1;
-    parts.push(`scale(${sx}, ${sy})`);
-  }
-
-  return parts.join(' ');
-}
-
-const savedOverflows = new WeakMap<HTMLElement, Map<HTMLElement, string>>();
-
-export function applyTransform(
-  element: HTMLElement,
-  state: TransformState,
-  containerDims?: { width: number; height: number },
-): void {
-  element.style.transform = buildTransformCSS(state, containerDims);
-  element.style.transformOrigin = 'center center';
-
-  // Set overflow on immediate parent based on autoFit
-  const parent = element.parentElement;
-  if (parent) {
-    const savedMap = new Map<HTMLElement, string>();
-    if (state.autoFit && isVerticalRotation(state.rotation)) {
-      savedMap.set(parent, parent.style.overflow);
-      parent.style.overflow = 'hidden';
+    if (isDefaultState(state)) {
+      element.style.transform = this.saved.transform;
+      element.style.transition = this.saved.transition;
     } else {
-      // For non-autoFit, walk ancestors and set overflow visible so rotated content shows
-      let ancestor: HTMLElement | null = parent;
-      let depth = 0;
-      while (ancestor && depth < 5) {
+      element.style.transform = buildTransformCSS(state, stage, media);
+    }
+
+    // A neutral state must not keep the host page's overflow mutated. v0.1.0
+    // had this same leak: once an ancestor was opened up it stayed open.
+    if (isDefaultState(state)) {
+      this.restoreOverflow();
+    } else {
+      this.syncOverflow(element, state.autoFit);
+    }
+  }
+
+  /** Drop the transition so live drags track the cursor exactly. */
+  setInteractive(element: HTMLElement, interactive: boolean): void {
+    if (!this.saved) return;
+    element.style.transition = interactive ? 'none' : FADE;
+  }
+
+  release(): void {
+    if (this.target && this.saved) {
+      this.target.style.transform = this.saved.transform;
+      this.target.style.transformOrigin = this.saved.transformOrigin;
+      this.target.style.willChange = this.saved.willChange;
+      this.target.style.transition = this.saved.transition;
+    }
+    this.restoreOverflow();
+    this.target = null;
+    this.saved = null;
+  }
+
+  private syncOverflow(element: HTMLElement, clip: boolean): void {
+    if (clip) {
+      const parent = element.parentElement;
+      if (parent && !this.isOverridden(parent)) {
+        this.pushOverride(parent);
+        parent.style.setProperty('overflow', 'hidden');
+      }
+      return;
+    }
+
+    // Without clipping, rotated content must be allowed to paint outside the
+    // player box, otherwise 90°/270° rotations get chopped off.
+    let ancestor: HTMLElement | null = element.parentElement;
+    let depth = 0;
+    while (ancestor && depth < 6) {
+      if (!this.isOverridden(ancestor)) {
         const computed = getComputedStyle(ancestor);
         if (computed.overflow !== 'visible') {
-          savedMap.set(ancestor, ancestor.style.overflow);
-          ancestor.style.overflow = 'visible';
+          this.pushOverride(ancestor);
+          ancestor.style.setProperty('overflow', 'visible');
         }
-        ancestor = ancestor.parentElement;
-        depth++;
+      }
+      ancestor = ancestor.parentElement;
+      depth += 1;
+    }
+  }
+
+  private pushOverride(element: HTMLElement): void {
+    this.overflowOverrides.push({
+      element,
+      original: element.style.getPropertyValue('overflow'),
+      priority: element.style.getPropertyPriority('overflow'),
+    });
+  }
+
+  private isOverridden(element: HTMLElement): boolean {
+    return this.overflowOverrides.some((entry) => entry.element === element);
+  }
+
+  private restoreOverflow(): void {
+    for (const entry of this.overflowOverrides) {
+      if (!entry.element.isConnected) continue;
+      if (entry.original) {
+        entry.element.style.setProperty('overflow', entry.original, entry.priority);
+      } else {
+        entry.element.style.removeProperty('overflow');
       }
     }
-    savedOverflows.set(element, savedMap);
+    this.overflowOverrides = [];
   }
 }
 
-export function resetTransform(element: HTMLElement): void {
-  element.style.transform = '';
-  element.style.transformOrigin = '';
-
-  const overflowMap = savedOverflows.get(element);
-  if (overflowMap) {
-    for (const [el, original] of overflowMap) {
-      el.style.overflow = original;
-    }
-    savedOverflows.delete(element);
-  }
-}
+export { getDefaultState };
