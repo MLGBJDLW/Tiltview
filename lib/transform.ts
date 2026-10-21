@@ -77,8 +77,21 @@ export class TransformApplier {
     if (isDefaultState(state)) {
       this.restoreOverflow();
     } else {
-      this.syncOverflow(element, state.autoFit);
+      this.syncOverflow(element, TransformApplier.shouldClip(state));
     }
+  }
+
+  /**
+   * Whether ancestors should clip the transformed element.
+   *
+   * Only when auto-fit is OFF. With auto-fit ON the picture is deliberately
+   * sized to land exactly on the player box, so clipping would turn a sub-pixel
+   * rounding difference into a visibly cut edge — the opposite of "fit". Letting
+   * it overflow visibly costs nothing there, because the geometry already keeps
+   * it inside.
+   */
+  private static shouldClip(state: TransformState): boolean {
+    return !state.autoFit;
   }
 
   /** Drop the transition so live drags track the cursor exactly. */
@@ -101,8 +114,13 @@ export class TransformApplier {
 
   private syncOverflow(element: HTMLElement, clip: boolean): void {
     if (clip) {
+      // Clipping mode: only the immediate parent needs to be hidden. Any
+      // ancestors we opened in the previous (non-clipping) mode must be put back,
+      // otherwise switching auto-fit off would leave the stack permanently open
+      // and the clip would have no effect.
+      this.restoreOverflow();
       const parent = element.parentElement;
-      if (parent && !this.isOverridden(parent)) {
+      if (parent) {
         this.pushOverride(parent);
         parent.style.setProperty('overflow', 'hidden');
       }
@@ -110,16 +128,16 @@ export class TransformApplier {
     }
 
     // Without clipping, rotated content must be allowed to paint outside the
-    // player box, otherwise 90°/270° rotations get chopped off.
+    // player box, otherwise 90°/270° rotations get chopped off. This also has to
+    // undo a `hidden` recorded by a previous clipping pass, which is why the
+    // override map is keyed by element rather than append-only.
     let ancestor: HTMLElement | null = element.parentElement;
     let depth = 0;
     while (ancestor && depth < 6) {
-      if (!this.isOverridden(ancestor)) {
-        const computed = getComputedStyle(ancestor);
-        if (computed.overflow !== 'visible') {
-          this.pushOverride(ancestor);
-          ancestor.style.setProperty('overflow', 'visible');
-        }
+      const computed = getComputedStyle(ancestor);
+      if (computed.overflow !== 'visible') {
+        if (!this.isOverridden(ancestor)) this.pushOverride(ancestor);
+        ancestor.style.setProperty('overflow', 'visible');
       }
       ancestor = ancestor.parentElement;
       depth += 1;

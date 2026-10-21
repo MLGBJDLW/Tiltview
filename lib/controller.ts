@@ -4,6 +4,7 @@ import {
   MAX_SCALE,
   MIN_SCALE,
   clampScale,
+  displayedMediaSize,
   getDefaultState,
   type MediaSize,
   type StageSize,
@@ -277,14 +278,34 @@ export class TiltviewController {
   }
 
   private readMediaSize(video: HTMLVideoElement): MediaSize | null {
-    if (video.videoWidth > 0 && video.videoHeight > 0) {
-      return { width: video.videoWidth, height: video.videoHeight };
-    }
-    const rect = video.getBoundingClientRect();
-    if (rect.width > 0 && rect.height > 0) {
-      return { width: rect.width, height: rect.height };
-    }
-    return this.media;
+    // Use offsetWidth/offsetHeight, NOT getBoundingClientRect().
+    //
+    // getBoundingClientRect() reports the element's *transformed* box, so once a
+    // 90° rotation is applied it returns the swapped orientation. Feeding that
+    // back into the next auto-fit computation makes the size reference itself:
+    // each recompute measures the already-rotated box, fits it again, and the
+    // picture grows without bound. Layout offsets ignore `transform`, so they
+    // describe the box the element occupies in its own untransformed frame.
+    const layoutW = video.offsetWidth;
+    const layoutH = video.offsetHeight;
+    const elementBox: StageSize | null =
+      layoutW > 0 && layoutH > 0
+        ? { width: layoutW, height: layoutH }
+        : (() => {
+            const rect = video.getBoundingClientRect();
+            return rect.width > 0 && rect.height > 0
+              ? { width: rect.width, height: rect.height }
+              : null;
+          })();
+    const intrinsic: MediaSize | null =
+      video.videoWidth > 0 && video.videoHeight > 0
+        ? { width: video.videoWidth, height: video.videoHeight }
+        : null;
+
+    // Use the size the video is actually painted at, not its intrinsic pixels.
+    // See displayedMediaSize(): mixing the two is what made auto-fit zoom the
+    // picture past the player edges.
+    return displayedMediaSize(elementBox, intrinsic) ?? this.media;
   }
 
   private scheduleSave(): void {
@@ -368,7 +389,7 @@ export class TiltviewController {
         onScale: (value) => this.setState({ scale: Math.min(MAX_SCALE, Math.max(MIN_SCALE, value)) }),
       });
     }
-    this.panel.mount(anchor.container);
+    this.panel.mount(anchor.container, anchor.safeArea ?? null);
     this.panel.update(this.state, this.settings.enabled);
     this.mountedContainer = anchor.container;
 

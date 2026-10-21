@@ -107,9 +107,17 @@ const CSS = /* css */ `
 
 const POSITION_KEY = 'tiltview:panel-position';
 
+/** Gap between the panel and the edge of the picture area it sits in. */
+const PANEL_MARGIN_PX = 10;
+/**
+ * Space kept clear at the bottom of the picture area for the player's own
+ * control bar, so the panel tab never covers play/seek controls.
+ */
+const CONTROL_BAR_CLEARANCE_PX = 56;
+
 export interface PanelHandle {
   host: HTMLElement;
-  mount(container: HTMLElement): void;
+  mount(container: HTMLElement, safeArea?: HTMLElement | null): void;
   update(state: TransformState, siteEnabled: boolean): void;
   setOpen(open: boolean): void;
   isOpen(): boolean;
@@ -170,10 +178,21 @@ export function createFloatingPanel(
   applySavedPosition();
 
   let open = false;
+  /** Picture area the panel is kept inside; set by mount(). */
+  let safeBox: HTMLElement | null = null;
+
   function setOpen(next: boolean): void {
     open = next;
     panel.setAttribute('data-open', String(open));
     tab.setAttribute('data-open', String(open));
+    // The panel body is display:none until opened, so its height is only
+    // measurable now. Re-clamp so an opened panel still fits the picture area.
+    if (open && safeBox) {
+      // Two frames: one for the display flip, one for the resulting layout.
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        if (safeBox) clampInto(safeBox);
+      }));
+    }
   }
 
   tab.addEventListener('click', (event) => {
@@ -189,10 +208,12 @@ export function createFloatingPanel(
 
   return {
     host,
-    mount(container) {
+    mount(container, safeArea) {
       if (host.parentElement !== container) {
         container.appendChild(host);
       }
+      safeBox = safeArea ?? container;
+      clampInto(safeBox);
     },
     update(nextState, enabled) {
       state = { ...nextState };
@@ -322,6 +343,27 @@ export function createFloatingPanel(
       if (event.button !== 0) return;
       const target = event.currentTarget as HTMLElement;
       if (target === tab) event.stopPropagation();
+
+      // Never start a drag from an interactive control inside the panel.
+      //
+      // The panel is registered as a drag surface, so a press on any button used
+      // to call setPointerCapture() on the panel. Pointer capture retargets every
+      // subsequent pointer event to the capturing element, so `pointerup` arrived
+      // at `.panel` while `pointerdown` had arrived at the button. With press and
+      // release on different elements the browser cannot synthesise a click on
+      // the button and dispatches it to their common ancestor instead — every
+      // action button in the panel was dead.
+      //
+      // A single-variable experiment on the built bundle confirmed it: with
+      // setPointerCapture() disabled, a real click produced 1 button click and
+      // the video transform changed; unmodified it produced 0 and no change.
+      const origin = event.target as HTMLElement | null;
+      if (target === panel && origin && origin !== panel && origin.closest?.(
+        'button, input, select, textarea, a, [role="button"]',
+      )) {
+        return;
+      }
+
       pointerId = event.pointerId;
       dragMoved = false;
       startX = event.clientX;
@@ -375,25 +417,83 @@ export function createFloatingPanel(
     }
   }
 
+  /**
+   * Keep the whole panel inside `box`.
+   *
+   * Why this exists: players disagree about what their "container" is. Bilibili
+   * puts the danmaku input bar *inside* `.bpx-player-container`, so a panel
+   * anchored with `bottom: 64px` from the container edge lands on the input and
+   * gets clipped. Positioning is therefore expressed against the picture area
+   * (the adapter's `safeArea`), and this function guarantees the result stays
+   * within it whatever size the panel ends up being.
+   */
+  function clampInto(box: HTMLElement): void {
+    const hostRect = host.getBoundingClientRect();
+    // Some players expose a "picture area" element with zero height (YouTube's
+    // .html5-video-container is 0px tall because the <video> is absolutely
+    // positioned inside). Falling back to the parent keeps the panel positioned
+    // instead of silently doing nothing.
+    let target = box;
+    let boxRect = target.getBoundingClientRect();
+    if ((boxRect.width <= 0 || boxRect.height <= 0) && target.parentElement) {
+      target = target.parentElement;
+      boxRect = target.getBoundingClientRect();
+    }
+    if (boxRect.width <= 0 || boxRect.height <= 0) return;
+    const panelRect = panel.getBoundingClientRect();
+    // The tab is always visible; the panel body adds height only when open.
+    const contentHeight =
+      open && panelRect.height > 0 ? panelRect.height + 6 : hostRect.height;
+    const width = Math.max(hostRect.width, panelRect.width);
+    if (width <= 0 || contentHeight <= 0) return;
+
+    const margin = PANEL_MARGIN_PX;
+    const origin = host.offsetParent as HTMLElement | null;
+    const originRect = origin?.getBoundingClientRect() ?? {
+      left: 0,
+      top: 0,
+      width: 0,
+      height: 0,
+      right: 0,
+      bottom: 0,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    } as DOMRect;
+
+    // Desired position: bottom-right of the safe area, lifted above the control
+    // bar so the tab never sits on top of the play controls.
+    const boxLeftInParent = boxRect.left - originRect.left + (origin?.scrollLeft ?? 0);
+    const boxTopInParent = boxRect.top - originRect.top + (origin?.scrollTop ?? 0);
+
+    const desiredLeft = boxLeftInParent + boxRect.width - width - margin;
+    const desiredTop = boxTopInParent + boxRect.height - contentHeight - CONTROL_BAR_CLEARANCE_PX;
+
+    const minLeft = boxLeftInParent + margin;
+    const maxLeft = boxLeftInParent + boxRect.width - width - margin;
+    const minTop = boxTopInParent + margin;
+    const maxTop = boxTopInParent + boxRect.height - contentHeight - margin;
+
+    const left = Math.min(Math.max(desiredLeft, minLeft), Math.max(minLeft, maxLeft));
+    const top = Math.min(Math.max(desiredTop, minTop), Math.max(minTop, maxTop));
+
+    host.style.left = `${Math.round(left)}px`;
+    host.style.top = `${Math.round(top)}px`;
+    host.style.right = 'auto';
+    host.style.bottom = 'auto';
+    host.dataset.safeArea = 'true';
+  }
+
   function applySavedPosition(): void {
     try {
       const raw = localStorage.getItem(POSITION_KEY);
-      if (!raw) {
-        host.style.right = '12px';
-        host.style.bottom = '64px';
-        return;
-      }
-      const parsed = JSON.parse(raw) as { left?: string; top?: string };
-      if (parsed.left && parsed.top) {
+      const parsed = raw ? (JSON.parse(raw) as { left?: string; top?: string }) : null;
+      if (parsed?.left && parsed.top) {
         host.style.left = parsed.left;
         host.style.top = parsed.top;
-      } else {
-        host.style.right = '12px';
-        host.style.bottom = '64px';
       }
     } catch {
-      host.style.right = '12px';
-      host.style.bottom = '64px';
+      /* fall through to the adapter-driven default */
     }
   }
 }

@@ -59,7 +59,9 @@ export function getDefaultState(): TransformState {
     translateY: 0,
     flipH: false,
     flipV: false,
-    autoFit: false,
+    // Auto-fit is on by default: without it, any non-zero rotation lets the
+    // picture overflow the player and the user cannot see the whole frame.
+    autoFit: true,
   };
 }
 
@@ -83,10 +85,34 @@ export function swapsAxes(rotation: number): boolean {
 }
 
 /**
- * Scale factor that makes a rotated `media` completely contain `stage`
- * ("cover"), so no letterbox or pillarbox bars remain inside the player.
+ * Scale factor that keeps a rotated `media` entirely visible inside `stage`.
  *
- * Returns 1 when the geometry is unknown or already fills the stage.
+ * The reported bug
+ * ----------------
+ * Rotating a landscape picture 90° makes its bounding box portrait (978x550 →
+ * 550x978). With no correction it no longer fits the player: measured on
+ * Bilibili, `getBoundingClientRect()` reported `bottom: 932` against a player
+ * bottom of `718`, i.e. 214px of the picture was outside the box and the user
+ * saw a cropped fragment — "旋转之后的画面没有办法适配整个框…根本看不到全貌".
+ *
+ * What the factor must be
+ * -----------------------
+ * The whole picture has to remain visible, so this is a *contain* fit: the
+ * tighter axis decides.
+ *
+ *     contain = min(stageW / rotatedW, stageH / rotatedH)
+ *
+ * For 978x550 rotated to 550x978 that is `min(1.778, 0.562)` = 0.562, which
+ * brings the rotated box back to 309x550 — fully inside the player, letterboxed
+ * on the sides, exactly like an unrotated letterboxed video.
+ *
+ * A *cover* fit (`max`) is deliberately NOT used: it would scale to 1.778 and
+ * blow the picture up to 978x1739, worse than the bug it is meant to fix. It
+ * was tried and measured; see the commit that introduced this note.
+ *
+ * `stage` and `media` must both be in the element's *untransformed* display
+ * space (see `displayedMediaSize` and the offsetWidth note in the controller).
+ * Mixing intrinsic pixels with a CSS box is the other way this overshoots.
  */
 export function computeAutoFitScale(
   stage: StageSize | null | undefined,
@@ -98,13 +124,47 @@ export function computeAutoFitScale(
   const { width: mw, height: mh } = media;
   if (sw <= 0 || sh <= 0 || mw <= 0 || mh <= 0) return 1;
 
-  // Size of the media bounding box after rotation.
+  // Bounding box of the media after rotation.
   const rotatedWidth = swapsAxes(rotation) ? mh : mw;
   const rotatedHeight = swapsAxes(rotation) ? mw : mh;
 
-  // "Cover": the smaller of the two axes dominates.
-  const fit = Math.max(sw / rotatedWidth, sh / rotatedHeight);
+  // Contain: the tighter axis decides, so nothing is pushed out of the player.
+  const fit = Math.min(sw / rotatedWidth, sh / rotatedHeight);
   return Number.isFinite(fit) && fit > 0 ? fit : 1;
+}
+
+/**
+ * The size a <video> actually paints inside its element box, i.e. what the
+ * user sees before we transform anything.
+ *
+ * `object-fit: contain` (the default on every player we support) letterboxes
+ * the intrinsic frame into the element box, so the visible picture is the
+ * largest `intrinsic`-aspect rectangle that fits. Returning the element box
+ * verbatim would be wrong for a non-matching aspect ratio; returning intrinsic
+ * pixels would be wrong whenever the element is scaled (which is the bug
+ * described above). This reconciles the two.
+ */
+export function displayedMediaSize(
+  elementBox: StageSize | null | undefined,
+  intrinsic: MediaSize | null | undefined,
+): MediaSize | null {
+  if (intrinsic && intrinsic.width > 0 && intrinsic.height > 0) {
+    if (!elementBox || elementBox.width <= 0 || elementBox.height <= 0) {
+      return { width: intrinsic.width, height: intrinsic.height };
+    }
+    const scale = Math.min(
+      elementBox.width / intrinsic.width,
+      elementBox.height / intrinsic.height,
+    );
+    return {
+      width: intrinsic.width * scale,
+      height: intrinsic.height * scale,
+    };
+  }
+  if (elementBox && elementBox.width > 0 && elementBox.height > 0) {
+    return { width: elementBox.width, height: elementBox.height };
+  }
+  return null;
 }
 
 /** Total scale applied to the element, including auto-fit. */

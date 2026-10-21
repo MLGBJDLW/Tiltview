@@ -11,6 +11,19 @@ export interface UiAnchor {
    * there; otherwise it renders a standalone floating tab.
    */
   controlBar?: HTMLElement | null;
+  /**
+   * Optional sub-region of `container` that is actually the picture area.
+   *
+   * Some players append chrome *inside* the container they expose: Bilibili's
+   * `.bpx-player-container` is 596px tall while `.bpx-player-video-area` (the
+   * picture) is only 550px — the extra 46px is the danmaku input bar. Anchoring
+   * the panel to `container` with `bottom: 64px` therefore parks it on top of
+   * that input, hiding part of the panel.
+   *
+   * When present the UI is positioned relative to this box instead, so it can
+   * never overlap the player's own controls.
+   */
+  safeArea?: HTMLElement | null;
 }
 
 export interface PlayerAdapter {

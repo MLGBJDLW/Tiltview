@@ -5,6 +5,7 @@ import {
   buildTransformCSS,
   clampScale,
   computeAutoFitScale,
+  displayedMediaSize,
   effectiveScale,
   getDefaultState,
   isDefaultState,
@@ -57,28 +58,43 @@ describe('swapsAxes', () => {
 });
 
 describe('computeAutoFitScale', () => {
-  it('returns exactly 1 when the media already fills the stage', () => {
-    // Regression: v0.1.0 computed `stageH / stageW` (≈0.56 for 16:9) and
-    // multiplied it into `scale`, so enabling auto-fit *shrank* the video.
+  it('shrinks a rotated landscape picture so it stays fully visible', () => {
+    // The exact Bilibili geometry behind the report: a 978x550 player showing a
+    // 978x550 picture. Rotated 90° the box becomes 550x978, which overflows
+    // vertically (bottom 932 vs player 718). Contain must scale it down.
+    const fit = computeAutoFitScale({ width: 978, height: 550 }, { width: 978, height: 550 }, 90);
+    expect(fit).toBeCloseTo(550 / 978, 5);
+    // Resulting box: 550*fit wide, 978*fit tall → fits inside 978x550.
+    expect(978 * fit).toBeCloseTo(550, 3);
+    expect(550 * fit).toBeLessThanOrEqual(978);
+  });
+
+  it('leaves an unrotated picture alone', () => {
+    // Contain at 0° for a media that already matches the stage is a no-op, so
+    // auto-fit being on by default never resizes an untouched video.
     expect(computeAutoFitScale({ width: 1920, height: 1080 }, { width: 1920, height: 1080 }, 0)).toBeCloseTo(1, 6);
   });
 
-  it('upscales to cover when the media is smaller than the stage', () => {
-    // A 720p source in a 1080p player box must grow, never shrink.
-    expect(computeAutoFitScale({ width: 1920, height: 1080 }, { width: 1280, height: 720 }, 0)).toBeCloseTo(1.5, 6);
+  it('scales a small media up to the stage while staying inside it', () => {
+    // A 720p source in a 1080p player box: contain = min(1.5, 1.5) = 1.5, which
+    // fills the player exactly. Enlarging is fine — it never exceeds the stage.
+    const fit = computeAutoFitScale({ width: 1920, height: 1080 }, { width: 1280, height: 720 }, 0);
+    expect(fit).toBeCloseTo(1.5, 6);
+    expect(1280 * fit).toBeLessThanOrEqual(1920);
+    expect(720 * fit).toBeLessThanOrEqual(1080);
   });
 
-  it('scales a portrait media to cover a landscape stage when rotated', () => {
+  it('fits a portrait media rotated into a landscape stage', () => {
     // 1080x1920 vertical video rotated 90° becomes 1920x1080 wide.
     const fit = computeAutoFitScale({ width: 1280, height: 720 }, { width: 1080, height: 1920 }, 90);
-    // Rotated bounding box 1920x1080 in a 1280x720 stage: cover = max(1280/1920, 720/1080) = 0.667
+    // Rotated box 1920x1080 into 1280x720: contain = min(1280/1920, 720/1080) = 0.667.
     expect(fit).toBeCloseTo(2 / 3, 5);
   });
 
-  it('fills a portrait stage with a landscape video rotated 90°', () => {
-    // v0.1.0 got this one right by accident; keep it pinned.
+  it('fits a landscape video rotated into a portrait stage', () => {
     const fit = computeAutoFitScale({ width: 720, height: 1280 }, { width: 1920, height: 1080 }, 90);
-    expect(fit).toBeCloseTo(1280 / 1920, 5);
+    // Rotated box 1080x1920 into 720x1280: contain = min(720/1080, 1280/1920) = 0.667.
+    expect(fit).toBeCloseTo(2 / 3, 5);
   });
 
   it('returns 1 for unknown or zero geometry', () => {
@@ -86,6 +102,53 @@ describe('computeAutoFitScale', () => {
     expect(computeAutoFitScale({ width: 640, height: 360 }, null, 90)).toBe(1);
     expect(computeAutoFitScale({ width: 0, height: 0 }, { width: 10, height: 10 }, 0)).toBe(1);
     expect(computeAutoFitScale({ width: 640, height: 360 }, { width: 0, height: 0 }, 0)).toBe(1);
+  });
+});
+
+describe('displayedMediaSize', () => {
+  it('reports what contain actually paints (Bilibili 640x360 in a 978x550 box)', () => {
+    // The exact geometry that made auto-fit zoom past the player edges: the
+    // element and the stream are both ~16:9, so contain paints essentially the
+    // whole element box and the cover factor must be ~1 at 0°, not 978/640.
+    const displayed = displayedMediaSize({ width: 978, height: 550 }, { width: 640, height: 360 });
+    expect(displayed).not.toBeNull();
+    // 978/550 (1.7782) and 640/360 (1.7778) differ by a hair, so contain fits to
+    // the width and leaves <1px of vertical slack.
+    expect(displayed!.width).toBeCloseTo(978, 0);
+    expect(displayed!.height).toBeCloseTo(550, 0);
+    const fit = computeAutoFitScale({ width: 978, height: 550 }, displayed, 0);
+    expect(fit).toBeGreaterThanOrEqual(1);
+    expect(fit).toBeLessThan(1.01);
+  });
+
+  it('letterboxes a mismatched aspect ratio instead of stretching', () => {
+    // 4:3 stream in a 16:9 box: contain fills height, leaves pillarboxes.
+    const displayed = displayedMediaSize({ width: 1000, height: 562 }, { width: 640, height: 480 });
+    expect(displayed!.height).toBeCloseTo(562, 1);
+    expect(displayed!.width).toBeCloseTo((640 / 480) * 562, 1);
+    expect(displayed!.width).toBeLessThan(1000);
+  });
+
+  it('stays in display space when the stream is larger than the element', () => {
+    // 1920x1080 stream rendered into a 960x540 element: contain scales 0.5.
+    const displayed = displayedMediaSize({ width: 960, height: 540 }, { width: 1920, height: 1080 });
+    expect(displayed!.width).toBeCloseTo(960, 4);
+    expect(displayed!.height).toBeCloseTo(540, 4);
+  });
+
+  it('falls back to intrinsic pixels when the element has no box yet', () => {
+    const displayed = displayedMediaSize({ width: 0, height: 0 }, { width: 1280, height: 720 });
+    expect(displayed).toEqual({ width: 1280, height: 720 });
+  });
+
+  it('falls back to the element box before metadata loads', () => {
+    const displayed = displayedMediaSize({ width: 800, height: 450 }, null);
+    expect(displayed).toEqual({ width: 800, height: 450 });
+  });
+
+  it('returns null when neither is known', () => {
+    expect(displayedMediaSize(null, null)).toBeNull();
+    expect(displayedMediaSize({ width: 0, height: 0 }, { width: 0, height: 0 })).toBeNull();
   });
 });
 
@@ -97,8 +160,16 @@ describe('effectiveScale', () => {
   });
 
   it('ignores stage/media when autoFit is off', () => {
-    const s = state({ scale: 1.5 });
+    const s = state({ scale: 1.5, autoFit: false });
     expect(effectiveScale(s, { width: 720, height: 1280 }, { width: 1920, height: 1080 })).toBe(1.5);
+  });
+
+  it('is exactly 1 at 0° for a media that already fills the stage', () => {
+    // Auto-fit must be a no-op before any rotation, otherwise enabling it by
+    // default would silently resize every untouched video.
+    const s = state({ autoFit: true, rotation: 0, scale: 1 });
+    const value = effectiveScale(s, { width: 978, height: 550 }, { width: 978, height: 550 });
+    expect(value).toBeCloseTo(1, 6);
   });
 });
 
@@ -185,13 +256,14 @@ describe('reducers', () => {
   });
 
   it('resetView keeps mirror preferences', () => {
-    const next = resetView(state({ rotation: 90, scale: 3, translateX: 10, flipH: true, autoFit: true }));
+    const next = resetView(state({ rotation: 90, scale: 3, translateX: 10, flipH: true, autoFit: false }));
     expect(next).toMatchObject({
       rotation: 0,
       scale: 1,
       translateX: 0,
       translateY: 0,
-      autoFit: false,
+      // Reset restores the default, which keeps auto-fit on.
+      autoFit: true,
       flipH: true,
       flipV: false,
     });

@@ -2,7 +2,7 @@
   "name": "tiltview",
   "description": "Rotate, zoom, pan, and mirror any HTML5 video on any website",
   "private": true,
-  "version": "1.0.3",
+  "version": "1.0.5",
   "type": "module",
   "scripts": {
     "dev": "wxt",

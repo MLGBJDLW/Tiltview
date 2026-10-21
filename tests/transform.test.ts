@@ -58,14 +58,34 @@ describe('TransformApplier', () => {
   it('restores every overridden ancestor overflow exactly once', () => {
     const { outer, player, video } = buildFixture();
     player.style.overflow = 'hidden';
+    outer.style.overflow = 'hidden';
     const applier = new TransformApplier();
 
-    // Many frames, as happens during a drag.
+    // Many frames, as happens during a drag. Auto-fit is on by default now and
+    // that path opens ancestors instead of clipping, so it is the branch that
+    // writes overrides here.
     for (let i = 0; i < 25; i += 1) {
       applier.apply(video, state({ rotation: 90, translateX: i }));
     }
-    // Rotated content needs its clipping ancestors opened up.
+    // Clipping ancestors were opened so the fitted picture is not cut.
+    expect(player.style.overflow).toBe('visible');
     expect(outer.style.overflow).toBe('visible');
+
+    applier.release();
+    // Exactly the original inline values come back — no leak, no duplication.
+    expect(player.style.overflow).toBe('hidden');
+    expect(outer.style.overflow).toBe('hidden');
+  });
+
+  it('opens clipping ancestors while auto-fit owns the geometry', () => {
+    // Auto-fit sizes the picture to land exactly on the player box. Any ancestor
+    // still clipping would turn sub-pixel rounding into a visibly cut edge, so
+    // the ancestors are opened rather than clipped.
+    const { outer, player, video } = buildFixture();
+    player.style.overflow = 'hidden';
+    const applier = new TransformApplier();
+
+    applier.apply(video, state({ rotation: 90, autoFit: true }));
     expect(player.style.overflow).toBe('visible');
 
     applier.release();
@@ -84,10 +104,11 @@ describe('TransformApplier', () => {
     expect(outer.style.overflow).toBe('visible');
   });
 
-  it('clips the parent when auto-fit is enabled', () => {
+  it('clips the parent only when auto-fit is off', () => {
     const { player, video } = buildFixture();
     const applier = new TransformApplier();
-    applier.apply(video, state({ rotation: 90, autoFit: true }));
+    // Manual zoom: the user may push the picture past the player, so clip.
+    applier.apply(video, state({ rotation: 90, autoFit: false }));
     expect(player.style.overflow).toBe('hidden');
     applier.release();
     // Original inline value was empty → property removed, not set to "hidden".

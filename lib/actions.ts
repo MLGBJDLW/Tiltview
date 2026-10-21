@@ -119,7 +119,8 @@ export function runAction(state: TransformState, id: ActionId): TransformState {
         translateY: 0,
         flipH: false,
         flipV: false,
-        autoFit: false,
+        // Keep auto-fit on so the next rotation is corrected automatically.
+        autoFit: true,
       };
     default: {
       const exhaustive: never = id;

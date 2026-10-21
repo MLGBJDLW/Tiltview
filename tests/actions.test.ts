@@ -86,7 +86,10 @@ describe('runAction', () => {
   });
 
   it('auto-fit toggles', () => {
-    expect(runAction(state(), 'auto-fit').autoFit).toBe(true);
+    // Default is ON (a rotated picture must stay inside the player), so the
+    // action turns it off and back on.
+    expect(runAction(state(), 'auto-fit').autoFit).toBe(false);
+    expect(runAction(state({ autoFit: false }), 'auto-fit').autoFit).toBe(true);
   });
 
   it('reset-pan only clears translation', () => {

@@ -80,6 +80,13 @@ export const youtubeAdapter: PlayerAdapter = {
     if (!player) return null;
     ensurePositioned(player);
     const controlBar = deepQuerySelector<HTMLElement>('.ytp-right-controls');
-    return { container: player, controlBar };
+    // `.ytp-chrome-bottom` (progress bar + controls) is painted INSIDE
+    // #movie_player and covers roughly the last 59px of it. Anchoring the panel
+    // to the picture area keeps it clear of that chrome, mirroring what the
+    // Bilibili adapter does for the danmaku bar.
+    const safeArea =
+      deepQuerySelector<HTMLElement>('.html5-video-container') ??
+      deepQuerySelector<HTMLElement>('.ytp-player-content');
+    return { container: player, controlBar, safeArea };
   },
 };

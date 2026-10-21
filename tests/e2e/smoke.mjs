@@ -24,6 +24,53 @@ const FIXTURE = path.join(ROOT, 'tests/fixtures/player.html');
 /** Origin the control-bar scenario needs; fulfilled locally via page.route. */
 const YT_FIXTURE_URL = 'https://www.youtube.com/player.html';
 const BILI_FIXTURE_URL = 'https://www.bilibili.com/video/BV1GJ411x7h7';
+/**
+ * Bilibili-shaped player whose container is taller than its picture area:
+ * the extra 46px at the bottom is the danmaku submit bar. The floating panel
+ * must be positioned against the picture area, never over that bar.
+ */
+const SAFE_AREA_FIXTURE = `<!doctype html><html lang="zh"><head><meta charset="utf-8"><style>
+  html,body{margin:0;background:#000;color:#fff}
+  .bpx-player-container{position:relative;width:978px;height:596px;background:#000}
+  .bpx-player-video-area{position:relative;width:978px;height:550px;background:#111;overflow:hidden}
+  .bpx-player-video-wrap{width:978px;height:550px}
+  video{width:100%;height:100%;object-fit:contain;display:block}
+  .bpx-player-control-wrap{position:absolute;left:0;right:0;bottom:46px;height:55px}
+  .bpx-player-control-bottom{display:flex;height:35px;padding:0 12px}
+  .bpx-player-control-bottom-right{display:flex;height:35px}
+  .bpx-player-sending-area{position:absolute;left:0;right:0;bottom:0;height:46px;background:#0a0a0a}
+  .bpx-player-ctrl-btn{display:block;height:22px;line-height:22px;margin:0 10px 0 0;font-size:12px}
+</style></head><body>
+<div class="bpx-player-container" id="bilibili-player">
+  <div class="bpx-player-video-area">
+    <div class="bpx-player-video-wrap"><video id="v" playsinline muted loop></video></div>
+  </div>
+  <div class="bpx-player-control-wrap">
+    <div class="bpx-player-control-bottom">
+      <div class="bpx-player-control-bottom-left"></div>
+      <div class="bpx-player-control-bottom-right">
+        <div class="bpx-player-ctrl-btn" style="width:28px">1080P</div>
+        <div class="bpx-player-ctrl-btn" style="width:36px">Fullscreen</div>
+      </div>
+    </div>
+  </div>
+  <div class="bpx-player-sending-area" id="sending"></div>
+</div>
+</body></html>`;
+
+/** Force-open shadow roots so the harness can measure the panel's internals. */
+const openShadowHook = `
+  (() => {
+    const orig = Element.prototype.attachShadow;
+    window.__tvShadowRoots = [];
+    Element.prototype.attachShadow = function (init) {
+      const root = orig.call(this, { ...init, mode: 'open' });
+      window.__tvShadowRoots.push({ host: this, root });
+      return root;
+    };
+  })();
+`;
+
 
 const CHROME_CANDIDATES = [
   process.env.TILTVIEW_CHROME,
@@ -231,7 +278,8 @@ async function run() {
     check('getState reports the generic adapter', status?.adapter === 'Generic', JSON.stringify(status));
     check('getState reports a detected video', status?.hasVideo === true, JSON.stringify(status));
 
-    // --- rotation ---------------------------------------------------------
+    // --- rotation (auto-fit pinned off: this asserts the raw matrix) -------
+    await send({ type: 'setState', payload: { rotation: 0, scale: 1, autoFit: false } });
     await send({ type: 'command', command: 'rotate-cw' });
     await page.waitForTimeout(200);
     const rotated = parseMatrix(await video.evaluate((el) => getComputedStyle(el).transform));
@@ -244,7 +292,7 @@ async function run() {
     // --- pan in screen space (the v0.1.0 regression) -----------------------
     await send({
       type: 'setState',
-      payload: { rotation: 90, scale: 1.5, translateX: 40, translateY: -25 },
+      payload: { rotation: 90, scale: 1.5, translateX: 40, translateY: -25, autoFit: false },
     });
     await page.waitForTimeout(200);
     const panned = parseMatrix(await video.evaluate((el) => getComputedStyle(el).transform));
@@ -260,8 +308,17 @@ async function run() {
     );
 
     // --- overflow hygiene -------------------------------------------------
+    // With auto-fit owning the geometry the picture is sized to land exactly on
+    // the player, so ancestors are opened rather than clipped — otherwise a
+    // sub-pixel rounding difference would show up as a cut edge.
+    await send({ type: 'setState', payload: { rotation: 90, scale: 1, autoFit: true } });
+    await page.waitForTimeout(200);
     const overflowDuring = await page.locator('#player').evaluate((el) => getComputedStyle(el).overflow);
-    check('rotated content is not clipped mid-transform', overflowDuring === 'visible', overflowDuring);
+    check(
+      'auto-fit does not clip the picture mid-transform',
+      overflowDuring === 'visible',
+      overflowDuring,
+    );
 
     await send({ type: 'reset' });
     await page.waitForTimeout(200);
@@ -516,6 +573,221 @@ async function run() {
         }
       } finally {
         await biliPage.close();
+      }
+    }
+
+
+    // --- floating panel: real clicks must reach the action buttons ---------
+    // Regression: the panel registered itself as a drag surface and called
+    // setPointerCapture() on the panel for ANY press inside it, including
+    // presses on the buttons. Capture retargeted pointerup to .panel, so press
+    // and release landed on different elements, the browser dispatched click to
+    // their common ancestor, and every action button was dead:
+    //   pointerdown -> button.act (depth 11)
+    //   pointerup   -> .panel     (depth 8)
+    //   click       -> .panel     (depth 8)
+    // The shadow root is closed, so this scenario force-opens it via an
+    // attachShadow hook before the bundle runs, then measures real button rects
+    // and clicks them with real mouse events.
+    {
+      const panelPage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+      try {
+        await panelPage.goto(url, { waitUntil: 'domcontentloaded' });
+        await panelPage.addScriptTag({ content: openShadowHook });
+        await panelPage.addScriptTag({ content: stub });
+        await panelPage.addScriptTag({ content: bundle });
+        await panelPage.waitForTimeout(1200);
+
+        const shadowRootOf = (page) =>
+          page.evaluate(() => {
+            const host = document.querySelector('#tiltview-panel-host');
+            if (!host) return null;
+            const entry = (window.__tvShadowRoots || []).find((e) => e.host === host);
+            if (!entry) return null;
+            const panel = entry.root.querySelector('.panel');
+            return { open: panel.getAttribute('data-open') };
+          });
+
+        // Open the panel by clicking the tab.
+        const tabPt = await panelPage.evaluate(() => {
+          const host = document.querySelector('#tiltview-panel-host');
+          const entry = window.__tvShadowRoots.find((e) => e.host === host);
+          const tab = entry.root.querySelector('.tab');
+          const r = tab.getBoundingClientRect();
+          return { cx: Math.round(r.x + r.width / 2), cy: Math.round(r.y + r.height / 2) };
+        });
+        await panelPage.mouse.click(tabPt.cx, tabPt.cy);
+        await panelPage.waitForTimeout(400);
+
+        const state = await shadowRootOf(panelPage);
+        check('panel opens when its tab is clicked', state?.open === 'true', JSON.stringify(state));
+
+        if (state?.open === 'true') {
+          // Instrument the first action button and measure its real rect.
+          const target = await panelPage.evaluate(() => {
+            const host = document.querySelector('#tiltview-panel-host');
+            const entry = window.__tvShadowRoots.find((e) => e.host === host);
+            const btn = entry.root.querySelector('button.act');
+            window.__tvBtnClicks = 0;
+            btn.addEventListener('click', () => { window.__tvBtnClicks += 1; });
+            const r = btn.getBoundingClientRect();
+            return {
+              cx: Math.round(r.x + r.width / 2),
+              cy: Math.round(r.y + r.height / 2),
+              title: btn.getAttribute('title'),
+            };
+          });
+
+          const transformBefore = await panelPage.evaluate(
+            () => getComputedStyle(document.querySelector('#v')).transform,
+          );
+
+          await panelPage.mouse.click(target.cx, target.cy);
+          await panelPage.waitForTimeout(350);
+
+          const clicks = await panelPage.evaluate(() => window.__tvBtnClicks);
+          const transformAfter = await panelPage.evaluate(
+            () => getComputedStyle(document.querySelector('#v')).transform,
+          );
+
+          diag.panelClick = { target, clicks, transformBefore, transformAfter };
+
+          check(
+            'a real click reaches the panel action button',
+            clicks > 0,
+            'button=' + target.title + ' clicks=' + clicks,
+          );
+          check(
+            'that click actually transforms the video',
+            transformBefore !== transformAfter,
+            transformBefore + ' -> ' + transformAfter,
+          );
+        }
+      } finally {
+        await panelPage.close();
+      }
+    }
+
+
+    // --- rotated picture stays inside the player (bug 1) ------------------
+    // Rotating a landscape picture 90° swaps its bounding box. Without a
+    // corrected fit factor the portrait box overflows the player vertically and
+    // the user only sees a cropped fragment. Measured on Bilibili before the
+    // fix: the 978x550 video became 550x978 with bottom 932 vs player 718.
+    {
+      const fitPage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+      try {
+        await fitPage.goto(url, { waitUntil: 'domcontentloaded' });
+        await fitPage.addScriptTag({ content: stub });
+        await fitPage.addScriptTag({ content: bundle });
+        await fitPage.waitForTimeout(1200);
+
+        const send = (request) =>
+          fitPage.evaluate(
+            (req) => new Promise((res) => window.__tvListeners[0](req, {}, res)),
+            request,
+          );
+
+        const box = () =>
+          fitPage.evaluate(() => {
+            const v = document.querySelector('#v').getBoundingClientRect();
+            const stage = document.querySelector('#player').getBoundingClientRect();
+            return {
+              video: { l: v.left, t: v.top, r: v.right, b: v.bottom, w: v.width, h: v.height },
+              stage: { l: stage.left, t: stage.top, r: stage.right, b: stage.bottom, w: stage.width, h: stage.height },
+            };
+          });
+
+        for (const degrees of [90, 180, 270]) {
+          await send({ type: 'setState', payload: { rotation: degrees, autoFit: true } });
+          await fitPage.waitForTimeout(400);
+          const m = await box();
+          const slack = 1.5;
+          const inside =
+            m.video.l >= m.stage.l - slack &&
+            m.video.r <= m.stage.r + slack &&
+            m.video.t >= m.stage.t - slack &&
+            m.video.b <= m.stage.b + slack;
+          check(
+            'rotation ' + degrees + '° keeps the picture inside the player',
+            inside,
+            'video=' + JSON.stringify(m.video) + ' stage=' + JSON.stringify(m.stage),
+          );
+        }
+
+        // Auto-fit off: the user asked for the raw (overflowing) rotation.
+        await send({ type: 'setState', payload: { rotation: 90, autoFit: false } });
+        await fitPage.waitForTimeout(300);
+        const raw = await box();
+        check(
+          'with auto-fit off the rotation is left uncorrected',
+          raw.video.b > raw.stage.b + 1,
+          'video.b=' + raw.video.b + ' stage.b=' + raw.stage.b,
+        );
+
+        await send({ type: 'reset' });
+        await fitPage.waitForTimeout(300);
+        const afterReset = await fitPage.evaluate(
+          () => getComputedStyle(document.querySelector('#v')).transform,
+        );
+        check('reset restores the untransformed picture', afterReset === 'none', afterReset);
+      } finally {
+        await fitPage.close();
+      }
+    }
+
+    // --- panel clears the danmaku input bar (bug 2) ----------------------
+    // Bilibili's player container is taller than its picture area: the extra
+    // 46px is the danmaku submit bar. The panel is positioned against the
+    // picture area (adapter safeArea) so it can never overlap that bar.
+    {
+      const safePage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+      try {
+        await safePage.route('https://www.bilibili.com/**', (route) =>
+          route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: SAFE_AREA_FIXTURE }),
+        );
+        await safePage.goto('https://www.bilibili.com/video/BV1GJ411x7h7', {
+          waitUntil: 'domcontentloaded',
+        });
+        await safePage.addScriptTag({ content: stub });
+        await safePage.addScriptTag({ content: bundle });
+        await safePage.waitForTimeout(1200);
+
+        // Open the panel.
+        await safePage.evaluate(
+          () => new Promise((res) => window.__tvListeners[0]({ type: 'togglePanel' }, {}, res)),
+        );
+        await safePage.waitForTimeout(900);
+
+        const overlap = await safePage.evaluate(() => {
+          const host = document.querySelector('#tiltview-panel-host');
+          const sending = document.querySelector('.bpx-player-sending-area');
+          const area = document.querySelector('.bpx-player-video-area');
+          if (!host || !sending || !area) return null;
+          const h = host.getBoundingClientRect();
+          const s = sending.getBoundingClientRect();
+          const a = area.getBoundingClientRect();
+          return {
+            panelBottom: Math.round(h.bottom),
+            sendingTop: Math.round(s.top),
+            pictureBottom: Math.round(a.bottom),
+            overlapPx: Math.max(0, Math.round(h.bottom - s.top)),
+          };
+        });
+        diag.safeArea = overlap;
+
+        check(
+          'panel does not overlap the danmaku input bar',
+          overlap && overlap.overlapPx === 0,
+          JSON.stringify(overlap),
+        );
+        check(
+          'panel stays inside the picture area',
+          overlap && overlap.panelBottom <= overlap.pictureBottom + 1,
+          JSON.stringify(overlap),
+        );
+      } finally {
+        await safePage.close();
       }
     }
 

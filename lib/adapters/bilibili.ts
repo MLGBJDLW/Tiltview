@@ -79,6 +79,11 @@ export const bilibiliAdapter: PlayerAdapter = {
     if (!player) return null;
     ensurePositioned(player);
     const controlBar = queryFirst<HTMLElement>(CONTROL_BAR_SELECTORS);
-    return { container: player, controlBar };
+    // The picture area excludes Bilibili's danmaku input bar, which sits inside
+    // `.bpx-player-container` below `.bpx-player-video-area` (measured: 46px of
+    // the container's 596px). Without this the panel is positioned against the
+    // taller container and overlaps the input bar.
+    const safeArea = queryFirst<HTMLElement>(STAGE_SELECTORS);
+    return { container: player, controlBar, safeArea };
   },
 };
