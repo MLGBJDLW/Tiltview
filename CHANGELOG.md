@@ -4,6 +4,83 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [SemVer](https://semver.org/).
 
+## [1.0.3] — 2026-10-21
+
+### Fixed
+
+- **The in-player button was misaligned on Bilibili (and would be on any player
+  whose controls are not 40×40).** The v1.0.2 fix mirrored YouTube's
+  `.ytp-button` with a hard-coded 40×40 box. Bilibili's
+  `.bpx-player-ctrl-btn` is 28–50 wide by **22 high** inside a **35px** bar, and
+  that bar does not centre its children (`align-items: normal`, so a 22px
+  control sits at the top with 13px of slack below). Measured against a real
+  `.bpx-player-ctrl-btn`, the fixed box was **6.5px low and 18px too tall**.
+
+  The button no longer hard-codes geometry: on mount it measures a visible
+  sibling control in the actual bar and adopts its width, height, `margin-right`
+  gutter, font size, colour and alignment (`align-self` / `vertical-align`),
+  falling back to YouTube's metrics when nothing is measureable. Because it
+  re-measures on every reconcile, it also follows the bar through quality
+  switches, wide-screen mode and fullscreen transitions.
+
+  The button is also re-parented if the player rebuilds its bar, instead of
+  being stranded in a detached subtree.
+
+### Verified on real sites
+
+Both players, real pages, built bundle injected through a CDP isolated world:
+
+| site | host box | sibling box | top Δ | centre Δ | height Δ | click opens panel |
+|---|---|---|---|---|---|---|
+| YouTube | 48×40 | 144×40 | 0 | 0 | 0 | yes |
+| Bilibili | 28×22 | 28×22 | 0 | 0 | 0 | yes |
+
+### Added
+
+- `tests/control-bar-metrics.test.ts` — stubs per-site layout boxes and asserts
+  the host adopts the dominant sibling's geometry, gutter, colour and alignment;
+  covers Bilibili (22px, top-pinned, 10px gutter), YouTube (40×40), the
+  hidden-sibling case (players keep `display:none` buttons) and the fallback.
+- The end-to-end suite now drives a Bilibili control-bar scenario on the
+  `bilibili.com` origin and asserts mount, box parity, baseline parity,
+  gutter/colour reuse and click-to-open.
+
+## [1.0.2] — 2026-10-21
+
+### Fixed
+
+- **The in-player control-bar button did nothing on YouTube, and no panel could
+  be opened at all.** Both UI surfaces injected their icon with
+  `element.innerHTML = '<svg…>'`. YouTube enforces a Trusted Types CSP policy,
+  so that assignment threw during construction:
+  `TypeError: This document requires 'TrustedHTML' assignment`. The throw
+  aborted `TiltviewController.start()` on its **initialisation path**, before
+  either the floating panel or the control-bar button was attached — so the
+  button was present in the DOM but dead, and the panel never mounted.
+  Icons are now built with `createElementNS` (`lib/icons.ts`), which Trusted
+  Types does not police.
+- **The control-bar button was not on the same horizontal line as the other
+  icons.** The host used `inline-flex` + `height:100%` + `max-height:40px`.
+  In an `inline-block` control bar that falls back to `vertical-align:
+  baseline`; in a flex bar it stretched to the bar height and was then capped.
+  It is now a fixed 40×40 box mirroring YouTube's own `.ytp-button`, with
+  explicit `vertical-align: top`, and measures identical in both layouts.
+- **Temporal-dead-zone crash in `createFloatingPanel`.** `sliderRef` and
+  `outputRef` were declared with `let` *after* `buildPanel()` ran and assigned
+  them. Bundler hoisting hid it in production, but as plain ESM it throws
+  `Cannot access 'sliderRef' before initialization`. Declarations moved above
+  the call.
+
+### Added
+
+- `tests/ui-trusted-types.test.ts` — installs a Trusted-Types-style policy on
+  `Element.prototype.innerHTML` and asserts both UI surfaces construct cleanly.
+  Verified to fail when the implementation regresses to `innerHTML`.
+- The end-to-end fixture now models YouTube's control bar, and a dedicated
+  scenario runs it on the `youtube.com` origin (fulfilled locally via
+  `page.route`, so no network or DNS dependency) to assert the button mounts,
+  matches the 40×40 box, shares the icon baseline, and opens the panel on click.
+
 ## [1.0.1] — 2026-10-20
 
 ### Fixed

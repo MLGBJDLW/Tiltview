@@ -16,7 +16,11 @@ import {
   type ContentResponse,
 } from '@/lib/messaging';
 import { createFloatingPanel, type PanelHandle } from '@/lib/floating-panel';
-import { createControlBarButton, type ControlBarButtonHandle } from '@/lib/control-bar-button';
+import {
+  applyControlBarMetrics,
+  createControlBarButton,
+  type ControlBarButtonHandle,
+} from '@/lib/control-bar-button';
 import { GestureController } from '@/lib/gestures';
 import { loadSettings, loadView, saveView, type SiteSettings } from '@/lib/storage';
 import { TransformApplier } from '@/lib/transform';
@@ -369,11 +373,19 @@ export class TiltviewController {
     this.mountedContainer = anchor.container;
 
     if (this.settings.showControlBarButton && anchor.controlBar) {
+      const bar = anchor.controlBar;
       if (!this.controlButton || !this.controlButton.host.isConnected) {
         this.controlButton?.destroy();
         this.controlButton = createControlBarButton(() => this.togglePanel());
-        anchor.controlBar.prepend(this.controlButton.host);
+        bar.prepend(this.controlButton.host);
+      } else if (this.controlButton.host.parentElement !== bar) {
+        // The player rebuilt its bar (quality switch, fullscreen transition);
+        // move with it instead of stranding the button in a detached subtree.
+        bar.prepend(this.controlButton.host);
       }
+      // Re-measure every pass: control sizes differ per site and can change with
+      // the player's own layout (e.g. Bilibili's wide-screen mode).
+      applyControlBarMetrics(this.controlButton.host, bar);
       this.controlButton.setActive(this.panel.isOpen());
     } else if (this.controlButton) {
       this.controlButton.destroy();

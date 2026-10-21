@@ -21,6 +21,9 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const BUNDLE = path.join(ROOT, '.output/chrome-mv3/content-scripts/content.js');
 const MANIFEST = path.join(ROOT, '.output/chrome-mv3/manifest.json');
 const FIXTURE = path.join(ROOT, 'tests/fixtures/player.html');
+/** Origin the control-bar scenario needs; fulfilled locally via page.route. */
+const YT_FIXTURE_URL = 'https://www.youtube.com/player.html';
+const BILI_FIXTURE_URL = 'https://www.bilibili.com/video/BV1GJ411x7h7';
 
 const CHROME_CANDIDATES = [
   process.env.TILTVIEW_CHROME,
@@ -120,7 +123,13 @@ async function run() {
     res.end(await readFile(FIXTURE, 'utf8'));
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const url = `http://127.0.0.1:${server.address().port}/player.html`;
+  const port = server.address().port;
+  // The control-bar button only mounts through the YouTube adapter, so that
+  // scenario needs a page whose URL is on the youtube.com origin. Instead of
+  // relying on *.localhost DNS resolution (which differs across environments),
+  // the scenario fulfils https://www.youtube.com/player.html from the local
+  // fixture via page.route below — the URL really is youtube.com.
+  const url = `http://127.0.0.1:${port}/player.html`;
 
   const browser = await chromium.launch({ executablePath: chrome, headless: true });
   const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
@@ -313,6 +322,202 @@ async function run() {
       return { w: r.width, h: r.height };
     });
     check('stage geometry is reported for auto-fit', stage.w === 960 && stage.h === 540, JSON.stringify(stage));
+
+
+    // --- control-bar button: mount, alignment, click ----------------------
+    // The Generic adapter never returns a control-bar anchor, so this scenario
+    // loads the same fixture through the YouTube adapter route. It is the exact
+    // path a real youtube.com page takes.
+    {
+      const barPage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+      try {
+        const fixtureHtml = await readFile(FIXTURE, 'utf8');
+        await barPage.route('https://www.youtube.com/**', (route) =>
+          route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: fixtureHtml }),
+        );
+        await barPage.goto(YT_FIXTURE_URL, { waitUntil: 'domcontentloaded' });
+        await barPage.addScriptTag({ content: stub });
+        await barPage.addScriptTag({ content: bundle });
+        await barPage.waitForTimeout(1200);
+
+        const barStatus = await barPage.evaluate(
+          () => new Promise((resolve) => window.__tvListeners[0]({ type: 'getState' }, {}, resolve)),
+        );
+        check(
+          'control-bar scenario runs on the youtube.com origin',
+          barPage.url().startsWith('https://www.youtube.com/'),
+          barPage.url(),
+        );
+        check(
+          'control-bar scenario uses the YouTube adapter',
+          barStatus?.adapter === 'YouTube',
+          JSON.stringify(barStatus),
+        );
+
+        const barHost = barPage.locator('#tiltview-controlbar-host');
+        const barMounted = await barHost
+          .waitFor({ state: 'attached', timeout: 5000 })
+          .then(() => true)
+          .catch(() => false);
+        check('control-bar button mounts into .ytp-right-controls', barMounted);
+
+        if (barMounted) {
+          const geom = await barPage.evaluate(() => {
+            const host = document.querySelector('#tiltview-controlbar-host');
+            const rc = document.querySelector('.ytp-right-controls');
+            const sibling = rc?.querySelector('.ytp-button');
+            if (!host || !rc || !sibling) return null;
+            const h = host.getBoundingClientRect();
+            const s = sibling.getBoundingClientRect();
+            const r = rc.getBoundingClientRect();
+            return {
+              host: { w: +h.width.toFixed(1), h: +h.height.toFixed(1), cy: +((h.top + h.bottom) / 2).toFixed(1) },
+              sibling: { w: +s.width.toFixed(1), h: +s.height.toFixed(1), cy: +((s.top + s.bottom) / 2).toFixed(1) },
+              bar: { top: +r.top.toFixed(1), bottom: +r.bottom.toFixed(1) },
+              isFirst: rc.firstElementChild === host,
+            };
+          });
+          diag.controlBar = geom;
+
+          check('button is prepended as the first control-bar child', geom?.isFirst === true);
+          check(
+            'button matches the .ytp-button box (40x40)',
+            geom && Math.abs(geom.host.w - 40) < 0.6 && Math.abs(geom.host.h - 40) < 0.6,
+            JSON.stringify(geom?.host),
+          );
+          check(
+            'button sits on the same horizontal line as sibling icons',
+            geom && Math.abs(geom.host.cy - geom.sibling.cy) <= 0.5,
+            geom ? 'host.cy=' + geom.host.cy + ' sibling.cy=' + geom.sibling.cy : 'no geometry',
+          );
+          check(
+            'button stays inside the control bar',
+            geom && geom.host.cy > geom.bar.top && geom.host.cy < geom.bar.bottom,
+            JSON.stringify(geom?.bar),
+          );
+
+          // The reported defect: clicking it did nothing.
+          const panel = barPage.locator('#tiltview-panel-host');
+          const before = await panel.evaluate((el) => {
+            const r = el.getBoundingClientRect();
+            return { w: +r.width.toFixed(1), h: +r.height.toFixed(1) };
+          });
+          const hb = await barHost.boundingBox();
+          await barPage.mouse.click(hb.x + hb.width / 2, hb.y + hb.height / 2);
+          await barPage.waitForTimeout(300);
+          const after = await panel.evaluate((el) => {
+            const r = el.getBoundingClientRect();
+            return { w: +r.width.toFixed(1), h: +r.height.toFixed(1) };
+          });
+          check(
+            'clicking the control-bar button opens the floating panel',
+            after.h > before.h + 4,
+            'before=' + JSON.stringify(before) + ' after=' + JSON.stringify(after),
+          );
+        }
+      } finally {
+        await barPage.close();
+      }
+    }
+
+
+    // --- Bilibili control bar: per-site metrics ---------------------------
+    // The button used to hard-code YouTube's 40x40 box. Bilibili's
+    // .bpx-player-ctrl-btn is 28x22 in a 35px bar, top-aligned, with a 10px
+    // gutter — against which the fixed box measured 6.5px low and 18px too tall.
+    {
+      const biliPage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+      try {
+        await biliPage.route('https://www.bilibili.com/**', (route) =>
+          route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: "<!doctype html><html lang=\"zh\"><head><meta charset=\"utf-8\"><title>bili fixture</title><style>\n  html,body{margin:0;background:#000;color:#fff}\n  .bpx-player-container{position:relative;width:978px;height:596px;background:#000}\n  .bpx-player-video-area{position:relative;width:978px;height:550px;background:#111}\n  .bpx-player-video-wrap{width:978px;height:550px;overflow:visible}\n  video{width:100%;height:100%;object-fit:contain;display:block}\n  .bpx-player-control-wrap{position:absolute;left:0;right:0;bottom:0;height:46px}\n  .bpx-player-control-bottom{display:flex;align-items:normal;justify-content:space-between;\n    height:35px;padding:0 12px}\n  .bpx-player-control-bottom-right{display:flex;height:35px}\n  .bpx-player-ctrl-btn{display:block;height:22px;line-height:22px;margin:0 10px 0 0;\n    font-size:12px;color:rgba(255,255,255,.8);cursor:pointer;white-space:nowrap}\n</style></head><body>\n<div class=\"bpx-player-container\" id=\"bilibili-player\">\n  <div class=\"bpx-player-video-area\">\n    <div class=\"bpx-player-video-wrap\"><video id=\"v\" playsinline muted loop></video></div>\n  </div>\n  <div class=\"bpx-player-control-wrap\">\n    <div class=\"bpx-player-control-bottom\">\n      <div class=\"bpx-player-control-bottom-left\"></div>\n      <div class=\"bpx-player-control-bottom-right\" id=\"right\">\n        <div class=\"bpx-player-ctrl-btn bpx-player-ctrl-quality\" style=\"width:28px\">1080P</div>\n        <div class=\"bpx-player-ctrl-btn bpx-player-ctrl-playbackrate\" style=\"width:50px\">倍速</div>\n        <div class=\"bpx-player-ctrl-btn bpx-player-ctrl-subtitle\" style=\"width:28px\">字幕</div>\n        <div class=\"bpx-player-ctrl-btn bpx-player-ctrl-volume\" style=\"width:36px\">音量</div>\n        <div class=\"bpx-player-ctrl-btn bpx-player-ctrl-full\" style=\"width:36px\">全屏</div>\n      </div>\n    </div>\n  </div>\n</div>\n</body></html>" }),
+        );
+        await biliPage.goto(BILI_FIXTURE_URL, { waitUntil: 'domcontentloaded' });
+        await biliPage.addScriptTag({ content: stub });
+        await biliPage.addScriptTag({ content: bundle });
+        await biliPage.waitForTimeout(1200);
+
+        const biliStatus = await biliPage.evaluate(
+          () => new Promise((resolve) => window.__tvListeners[0]({ type: 'getState' }, {}, resolve)),
+        );
+        check(
+          'bilibili scenario uses the Bilibili adapter',
+          biliStatus?.adapter === 'Bilibili',
+          JSON.stringify(biliStatus),
+        );
+
+        const biliHost = biliPage.locator('#tiltview-controlbar-host');
+        const biliMounted = await biliHost
+          .waitFor({ state: 'attached', timeout: 5000 })
+          .then(() => true)
+          .catch(() => false);
+        check('bilibili: control-bar button mounts', biliMounted);
+
+        if (biliMounted) {
+          const geom = await biliPage.evaluate(() => {
+            const host = document.querySelector('#tiltview-controlbar-host');
+            const bar = document.querySelector('.bpx-player-control-bottom-right');
+            const sib = bar?.querySelector('.bpx-player-ctrl-btn');
+            if (!host || !bar || !sib) return null;
+            const h = host.getBoundingClientRect();
+            const s = sib.getBoundingClientRect();
+            return {
+              host: { w: +h.width.toFixed(1), h: +h.height.toFixed(1), top: +h.top.toFixed(1),
+                      cy: +((h.top + h.bottom) / 2).toFixed(1) },
+              sibling: { w: +s.width.toFixed(1), h: +s.height.toFixed(1), top: +s.top.toFixed(1),
+                         cy: +((s.top + s.bottom) / 2).toFixed(1) },
+              marginRight: getComputedStyle(host).marginRight,
+              color: getComputedStyle(host).color,
+            };
+          });
+          diag.bilibiliControlBar = geom;
+
+          check(
+            'bilibili: button adopts the 28x22 sibling box',
+            geom && Math.abs(geom.host.w - geom.sibling.w) <= 0.5 &&
+              Math.abs(geom.host.h - geom.sibling.h) <= 0.5,
+            JSON.stringify({ host: geom?.host, sibling: geom?.sibling }),
+          );
+          check(
+            'bilibili: button sits on the same horizontal line',
+            geom && Math.abs(geom.host.cy - geom.sibling.cy) <= 0.5,
+            geom ? 'host.cy=' + geom.host.cy + ' sibling.cy=' + geom.sibling.cy : 'no geometry',
+          );
+          check(
+            'bilibili: button top aligns with siblings (bar does not centre)',
+            geom && Math.abs(geom.host.top - geom.sibling.top) <= 0.5,
+            geom ? 'host.top=' + geom.host.top + ' sibling.top=' + geom.sibling.top : 'no geometry',
+          );
+          check(
+            'bilibili: button reuses the site 10px gutter and colour',
+            geom && geom.marginRight === '10px' && geom.color.includes('255'),
+            JSON.stringify({ m: geom?.marginRight, c: geom?.color }),
+          );
+
+          const before = await biliPage.evaluate(() => {
+            const p = document.querySelector('#tiltview-panel-host');
+            if (!p) return null;
+            const r = p.getBoundingClientRect();
+            return { h: +r.height.toFixed(1) };
+          });
+          const hb = await biliHost.boundingBox();
+          await biliPage.mouse.click(hb.x + hb.width / 2, hb.y + hb.height / 2);
+          await biliPage.waitForTimeout(300);
+          const after = await biliPage.evaluate(() => {
+            const p = document.querySelector('#tiltview-panel-host');
+            if (!p) return null;
+            const r = p.getBoundingClientRect();
+            return { h: +r.height.toFixed(1) };
+          });
+          check(
+            'bilibili: clicking the control-bar button opens the panel',
+            Boolean(before && after) && after.h > before.h + 4,
+            'before=' + JSON.stringify(before) + ' after=' + JSON.stringify(after),
+          );
+        }
+      } finally {
+        await biliPage.close();
+      }
+    }
 
     check('no page errors during the run', !diag.pageError, diag.pageError);
   } finally {

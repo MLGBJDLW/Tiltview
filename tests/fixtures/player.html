@@ -9,17 +9,57 @@
       .player { position: relative; width: 960px; height: 540px; background: #000; overflow: hidden; }
       video { width: 100%; height: 100%; object-fit: contain; display: block; }
       .notes { margin-top: 16px; font-size: 13px; color: #94a3b8; }
+
+      /*
+       * Mirrors YouTube's control bar so the injected button is exercised against
+       * a realistic layout: .ytp-right-controls is a flex row of 40x40 buttons.
+       */
+      .ytp-chrome-bottom {
+        position: absolute; bottom: 0; left: 12px; right: 12px; height: 48px; z-index: 2;
+      }
+      .ytp-chrome-controls {
+        display: flex; align-items: center; height: 100%; justify-content: space-between;
+      }
+      .ytp-left-controls { display: flex; align-items: center; height: 100%; }
+      .ytp-right-controls {
+        display: flex; align-items: center; text-align: right; height: 100%;
+        line-height: 0; font-size: 0;
+      }
+      .ytp-button {
+        display: inline-block; vertical-align: top; width: 40px; height: 40px;
+        padding: 0; margin: 0; border: 0; background: transparent; color: #fff;
+        opacity: 0.9; line-height: 0; font-size: 0; cursor: pointer;
+      }
+      .ytp-button svg { width: 100%; height: 100%; display: block; }
+      .ytp-play-button { width: 52px; }
     </style>
   </head>
   <body>
     <div class="wrap">
       <h1>Tiltview fixture</h1>
-      <div class="player" id="player">
+      <div class="player html5-video-player" id="player">
         <!-- No real media: headless Chrome lacks proprietary codecs. The
              content script only needs a <video> element with a box. -->
         <video id="v" playsinline muted loop></video>
+        <div class="ytp-chrome-bottom" id="chrome-bottom">
+          <div class="ytp-chrome-controls">
+            <div class="ytp-left-controls">
+              <button class="ytp-button ytp-play-button" aria-label="Play">
+                <svg viewBox="0 0 36 36"><path d="M12 26V10l14 8z" fill="#fff" /></svg>
+              </button>
+            </div>
+            <div class="ytp-right-controls" id="right-controls">
+              <button class="ytp-button ytp-settings-button" aria-label="Settings">
+                <svg viewBox="0 0 36 36"><path d="M18 21a3 3 0 100-6 3 3 0 000 6z" fill="#fff" /></svg>
+              </button>
+              <button class="ytp-button ytp-fullscreen-button" aria-label="Fullscreen">
+                <svg viewBox="0 0 36 36"><path d="M10 10h7v3h-4v4h-3z" fill="#fff" /></svg>
+              </button>
+            </div>
+          </div>
+        </div>
       </div>
-      <p class="notes">960x540 player · 960x540 video box</p>
+      <p class="notes">960x540 player · control bar mimics YouTube's .ytp-right-controls</p>
     </div>
   </body>
 </html>

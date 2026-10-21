@@ -1,5 +1,6 @@
 import { ACTIONS, isActionActive, type ActionId } from './actions';
 import type { TransformState } from './geometry';
+import { createTiltviewIcon } from './icons';
 
 /**
  * Floating, draggable control panel injected into the player.
@@ -8,6 +9,9 @@ import type { TransformState } from './geometry';
  * leak out. Position is remembered per browser in localStorage (page origin
  * scope is fine here; it is cosmetic state).
  */
+
+/** Matches the control-bar button so both entry points share one grid. */
+const ICON_SIZE_PX = 40;
 
 const CSS = /* css */ `
   :host {
@@ -27,8 +31,8 @@ const CSS = /* css */ `
     box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
   }
   .tab {
-    width: 34px;
-    height: 34px;
+    width: ${ICON_SIZE_PX}px;
+    height: ${ICON_SIZE_PX}px;
     border-radius: 10px;
     display: grid;
     place-items: center;
@@ -118,8 +122,6 @@ export interface PanelCallbacks {
   onScale(value: number): void;
 }
 
-const ICON = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14.5 6.5h4v4"/><path d="M18.5 6.5 14 11"/><rect x="3.5" y="9.5" width="9" height="9" rx="2"/></svg>`;
-
 export function createFloatingPanel(
   initialState: TransformState,
   callbacks: PanelCallbacks,
@@ -150,10 +152,19 @@ export function createFloatingPanel(
   tab.type = 'button';
   tab.title = 'Tiltview — drag to reposition';
   tab.setAttribute('data-open', 'false');
-  tab.innerHTML = ICON;
+  // Trusted Types safe: build the icon with DOM APIs, never innerHTML.
+  tab.appendChild(createTiltviewIcon());
   shadow.appendChild(tab);
 
   const buttons = new Map<ActionId, HTMLButtonElement>();
+
+  // These must be declared before buildPanel() runs: buildPanel assigns them at
+  // the end, and `let` bindings are in their temporal dead zone until the
+  // declaration is evaluated. Declaring them after the call worked only because
+  // the bundler hoisted them; as plain ESM it throws
+  // "Cannot access 'sliderRef' before initialization".
+  let sliderRef: HTMLInputElement | null = null;
+  let outputRef: HTMLOutputElement | null = null;
 
   buildPanel();
   applySavedPosition();
@@ -254,9 +265,6 @@ export function createFloatingPanel(
     sliderRef = slider;
     outputRef = output;
   }
-
-  let sliderRef: HTMLInputElement | null = null;
-  let outputRef: HTMLOutputElement | null = null;
 
   function group(label: string, ids: ActionId[]): HTMLDivElement {
     const wrapper = document.createElement('div');

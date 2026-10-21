@@ -20,6 +20,9 @@ tutorials, zoomed-in sports analysis, or a lecture recorded sideways.
   double-click to reset
 - **Floating panel** — draggable, remembers its position, styled in an isolated
   shadow root so no site CSS can break it
+- **In-player button** — on YouTube, Twitch and Bilibili the panel also opens
+  from a button injected next to the player's own controls; other sites use the
+  floating tab (or `Alt+Shift+T`)
 - **Per-site memory** — your view survives reloads, episode changes, and ad breaks
 - **Fullscreen aware** — the panel and transform follow the video into fullscreen
 - **Any site** — works with YouTube, Twitch, Bilibili, and any page with an
