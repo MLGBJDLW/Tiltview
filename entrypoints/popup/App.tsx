@@ -311,7 +311,12 @@ function App() {
             />
             实时同步
           </label>
-          <kbd className="rounded border border-slate-700 px-1.5 py-0.5 text-[10px]">Alt+Shift+T</kbd>
+          <kbd
+            className="rounded border border-slate-700 px-1.5 py-0.5 text-[10px]"
+            title="Chrome allows 4 default shortcuts; bind the rest at chrome://extensions/shortcuts"
+          >
+            Alt+Shift+T
+          </kbd>
         </div>
       </footer>
     </div>

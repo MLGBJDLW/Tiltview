@@ -79,6 +79,42 @@ async function run() {
   diag.bundleBytes = bundle.length;
   diag.manifestVersion = manifest.version;
 
+  // --- shipped manifest is loadable by Chrome -----------------------------
+  // Regression guard: v1.0.0 declared 7 commands with suggested_key and Chrome
+  // refused to load the extension at all ("The maximum is 4").
+  const commands = manifest.commands ?? {};
+  const keyed = Object.entries(commands).filter(
+    ([, value]) => value.suggested_key !== undefined,
+  );
+  diag.commands = Object.keys(commands);
+  diag.keyedCommands = keyed.map(([id, value]) => `${id}=${value.suggested_key?.default}`);
+
+  check(
+    'manifest declares commands',
+    Object.keys(commands).length > 0,
+    JSON.stringify(commands),
+  );
+  check(
+    `at most 4 commands carry a suggested_key (found ${keyed.length})`,
+    keyed.length <= 4,
+    JSON.stringify(diag.keyedCommands),
+  );
+  check(
+    'all commands have a non-empty suggested_key.default when present',
+    keyed.every(([, value]) => typeof value.suggested_key?.default === 'string' && value.suggested_key.default.length > 0),
+    JSON.stringify(diag.keyedCommands),
+  );
+  check(
+    'suggested_key values are unique',
+    new Set(keyed.map(([, value]) => String(value.suggested_key?.default ?? '').toLowerCase())).size === keyed.length,
+    JSON.stringify(diag.keyedCommands),
+  );
+  check(
+    'commands without a default key are still declared (user-assignable)',
+    Object.keys(commands).length > keyed.length,
+    JSON.stringify(diag.commands),
+  );
+
   const server = createServer(async (_req, res) => {
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
     res.end(await readFile(FIXTURE, 'utf8'));

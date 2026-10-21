@@ -4,6 +4,30 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [SemVer](https://semver.org/).
 
+## [1.0.1] — 2026-10-20
+
+### Fixed
+
+- **The extension could not be loaded at all.** Chrome rejected the manifest
+  with `Too many shortcuts specified for 'commands': The maximum is 4.` and the
+  extension never appeared in `chrome://extensions`. Seven commands declared a
+  `suggested_key`; Chrome allows four. v0.1.0 had the same latent bug with six.
+  - Default keys are now limited to the four actions that have no other
+    one-gesture path: `toggle-panel`, `rotate-cw`, `rotate-ccw`,
+    `reset-transform`.
+  - `zoom-in`, `zoom-out` and `toggle-autofit` stay in the manifest without a
+    default and remain bindable at `chrome://extensions/shortcuts`; zoom keeps
+    `Ctrl`/`Alt` + wheel and auto-fit keeps its panel button.
+
+### Changed
+
+- The `commands` table moved to `lib/shortcuts.ts` so the manifest is generated
+  from one typed source instead of hand-written JSON-ish config.
+- New regression guards: unit tests assert the generated command table never
+  exceeds the limit, uses unique Alt-based keys, and stays in sync with the
+  runtime command vocabulary; the end-to-end suite now also inspects the
+  **built** `manifest.json` before driving the bundle.
+
 ## [1.0.0] — 2026-10-20
 
 Full rewrite of the transform engine, the UI, and the delivery layer.

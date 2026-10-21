@@ -27,17 +27,19 @@ tutorials, zoomed-in sports analysis, or a lecture recorded sideways.
 
 ## Keyboard shortcuts
 
+Chrome allows at most **four** commands with a default shortcut, so only the
+actions without another one-gesture path get one:
+
 | Shortcut | Action |
 |---|---|
 | `Alt+Shift+T` | Open / close the floating panel |
 | `Alt+R` | Rotate 90° clockwise |
 | `Alt+Shift+R` | Rotate 90° counter-clockwise |
-| `Alt+=` | Zoom in |
-| `Alt+-` | Zoom out |
 | `Alt+0` | Reset all transforms |
-| `Alt+F` | Toggle auto-fit |
 
-All of them can be remapped at `chrome://extensions/shortcuts`.
+Zoom already has `Ctrl`/`Alt` + wheel at the cursor, and auto-fit has a button in
+the panel, so those commands ship **without** a default binding. All seven
+commands can be bound at `chrome://extensions/shortcuts`.
 
 ## Install
 

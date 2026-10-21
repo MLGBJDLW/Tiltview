@@ -1,4 +1,5 @@
 import { defineConfig } from 'wxt';
+import { toManifestCommands } from './lib/shortcuts';
 
 /**
  * Manifest notes (all three were bugs in v0.1.0):
@@ -17,39 +18,13 @@ export default defineConfig({
   manifest: {
     name: 'Tiltview',
     description: 'Rotate, zoom, pan, and mirror any HTML5 video on any website',
-    version: '1.0.0',
+    version: '1.0.1',
     permissions: ['storage', 'scripting', 'activeTab'],
     host_permissions: ['<all_urls>'],
     minimum_chrome_version: '109',
-    commands: {
-      'toggle-panel': {
-        suggested_key: { default: 'Alt+Shift+T' },
-        description: 'Open or close the Tiltview panel',
-      },
-      'rotate-cw': {
-        suggested_key: { default: 'Alt+R' },
-        description: 'Rotate video 90° clockwise',
-      },
-      'rotate-ccw': {
-        suggested_key: { default: 'Alt+Shift+R' },
-        description: 'Rotate video 90° counter-clockwise',
-      },
-      'zoom-in': {
-        suggested_key: { default: 'Alt+Equal' },
-        description: 'Zoom in',
-      },
-      'zoom-out': {
-        suggested_key: { default: 'Alt+Minus' },
-        description: 'Zoom out',
-      },
-      'reset-transform': {
-        suggested_key: { default: 'Alt+0' },
-        description: 'Reset all transforms',
-      },
-      'toggle-autofit': {
-        suggested_key: { default: 'Alt+F' },
-        description: 'Toggle auto-fit mode',
-      },
-    },
+    // At most four commands may declare a `suggested_key` (Chrome limit) — see
+    // lib/shortcuts.ts. Declaring more makes Chrome refuse to load the
+    // extension outright with "Too many shortcuts specified for 'commands'".
+    commands: toManifestCommands(),
   },
 });
