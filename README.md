@@ -65,6 +65,7 @@ pnpm dev            # dev mode with hot reload
 pnpm build          # production build (Chrome MV3)
 pnpm build:firefox  # Firefox build
 pnpm compile        # TypeScript check
+pnpm icons          # regenerate public/icon from scripts/logo-art.mjs
 pnpm test           # unit tests (vitest)
 pnpm test:coverage  # unit tests with coverage
 pnpm test:e2e       # build + drive the real bundle in a real Chrome

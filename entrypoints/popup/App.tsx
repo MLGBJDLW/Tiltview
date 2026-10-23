@@ -10,6 +10,7 @@ import {
 } from '@/lib/actions';
 import { MAX_SCALE, MIN_SCALE, getDefaultState, type TransformState } from '@/lib/geometry';
 import type { ContentResponse } from '@/lib/messaging';
+import { TiltLogo } from './TiltLogo';
 
 const PAN_STEP = 40;
 const SEND_DEBOUNCE_MS = 60;
@@ -121,9 +122,12 @@ function App() {
   return (
     <div className="w-[340px] bg-slate-900 text-slate-100 font-sans">
       <header className="flex items-center justify-between px-4 pt-4 pb-3 border-b border-slate-800">
-        <div>
-          <h1 className="text-base font-semibold tracking-tight">Tiltview</h1>
-          <p className="text-[11px] text-slate-500">{conn.adapter} · v1.0</p>
+        <div className="flex items-center gap-2.5">
+          <TiltLogo size={22} />
+          <div>
+            <h1 className="text-base font-semibold tracking-tight">Tiltview</h1>
+            <p className="text-[11px] text-slate-500">{conn.adapter} · v1.0</p>
+          </div>
         </div>
         <StatusPill conn={conn} />
       </header>

@@ -9,6 +9,9 @@ dist/
 # logs
 *.log
 
+# local review artefacts from `pnpm icons --sheet` (scripts/render-icons.mjs)
+.nexa/
+
 # os
 .DS_Store
 Thumbs.db

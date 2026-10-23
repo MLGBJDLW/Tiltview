@@ -4,6 +4,26 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [SemVer](https://semver.org/).
 
+## [Unreleased]
+
+## [1.0.6] — 2026-10-22
+
+### Changed
+
+- **New brand mark.** The green "plug/gear" glyph was replaced with a video
+  frame tilted 12° holding an upright portrait frame: the extension's core idea
+  (a vertical video on a landscape player) in one shape. Drawn at the palette
+  already used by the injection UI (`#38bdf8` on `#0a1018`–`#1b2333`), so the
+  toolbar icon and the floating panel stop looking like two different products.
+
+  - `public/icon/logo.svg` is the source of truth; the PNGs are rendered from
+    the same geometry (`16/32/48/96/128`).
+  - 16px/32px use a wider stroke and a 10px inner gap instead of a scaled-down
+    128px drawing: the first render of the scaled version made the nested frame
+    a single blob at toolbar size.
+  - The popup header now shows the mark (`entrypoints/popup/TiltLogo.tsx`)
+    instead of the title alone.
+
 ## [1.0.5] — 2026-10-21
 
 ### Fixed

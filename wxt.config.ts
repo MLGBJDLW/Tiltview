@@ -18,7 +18,7 @@ export default defineConfig({
   manifest: {
     name: 'Tiltview',
     description: 'Rotate, zoom, pan, and mirror any HTML5 video on any website',
-    version: '1.0.5',
+    version: '1.0.6',
     permissions: ['storage', 'scripting', 'activeTab'],
     host_permissions: ['<all_urls>'],
     minimum_chrome_version: '109',
