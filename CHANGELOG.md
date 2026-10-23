@@ -17,12 +17,20 @@ versioning follows [SemVer](https://semver.org/).
   toolbar icon and the floating panel stop looking like two different products.
 
   - `public/icon/logo.svg` is the source of truth; the PNGs are rendered from
-    the same geometry (`16/32/48/96/128`).
+    the same geometry (`16/32/48/96/128`) by `pnpm icons`
+    (`scripts/logo-art.mjs` → `scripts/render-icons.mjs`).
   - 16px/32px use a wider stroke and a 10px inner gap instead of a scaled-down
     128px drawing: the first render of the scaled version made the nested frame
     a single blob at toolbar size.
   - The popup header now shows the mark (`entrypoints/popup/TiltLogo.tsx`)
     instead of the title alone.
+
+### Fixed
+
+- **`pnpm compile` failed in a fresh clone.** `tsconfig.json` extends
+  `.wxt/tsconfig.json`, which only exists after WXT generates its types, so the
+  check reported `Cannot find module 'vite'` and TS1343 for every file. The
+  script now runs `wxt prepare` first.
 
 ## [1.0.5] — 2026-10-21
 
